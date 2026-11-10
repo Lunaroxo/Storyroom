@@ -1,0 +1,52 @@
+{
+  "name": "storyroom",
+  "productName": "Storyroom",
+  "version": "1.0.1",
+  "description": "Plan an animated show: writing, characters, storyboards, sound library.",
+  "author": "Lunaroxo",
+  "main": "main.js",
+  "repository": "https://github.com/Lunaroxo/Storyroom",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test",
+    "installer": "electron-builder --win --publish never",
+    "release": "node release.js"
+  },
+  "build": {
+    "appId": "com.lunaroxo.storyroom",
+    "productName": "Storyroom",
+    "files": [
+      "main.js",
+      "core.js",
+      "preload.js",
+      "sources.js",
+      "src/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "Lunaroxo",
+        "repo": "Storyroom",
+        "releaseType": "release"
+      }
+    ]
+  },
+  "devDependencies": {
+    "electron": "^45.2.3",
+    "electron-builder": "^26.18.0"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.11"
+  }
+}

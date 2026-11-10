@@ -1,0 +1,36 @@
+/* Styles for written documents. Shared by the editor and PDF export. */
+.rte, body.print { font: 12pt/1.5 Georgia, 'Times New Roman', serif; color: #1d1c1a; }
+.rte p, body.print p { margin: 0 0 .7em; }
+.rte h1, body.print h1 { font-size: 26pt; line-height: 1.2; margin: .4em 0 .4em; }
+.rte h2, body.print h2 { font-size: 19pt; line-height: 1.25; margin: .8em 0 .4em; }
+.rte h3, body.print h3 { font-size: 14.5pt; line-height: 1.3; margin: .8em 0 .3em; }
+.rte blockquote, body.print blockquote { margin: 0 0 .7em; padding-left: 1em; border-left: 3px solid #c9c2b4; color: #5a564e; }
+.rte ul, .rte ol, body.print ul, body.print ol { margin: 0 0 .7em; padding-left: 1.6em; }
+.rte hr, body.print hr { border: 0; border-top: 1px solid #c9c2b4; margin: 1.2em 0; }
+.rte table, body.print table { border-collapse: collapse; width: 100%; margin: 0 0 .7em; }
+.rte td, body.print td { border: 1px solid #c9c2b4; padding: 4px 8px; vertical-align: top; }
+.rte img, body.print img { max-width: 100%; height: auto; }
+
+.scene, .action, .char, .paren, .dlg, .trans { font-family: 'Courier New', Courier, monospace; line-height: 1.25; }
+.rte .scene, .print .scene { font-weight: 700; text-transform: uppercase; margin: 1.5em 0 .8em; }
+.rte .action, .print .action { margin: 0 0 1em; }
+.rte .char, .print .char { text-transform: uppercase; margin: 1em 0 0 2.2in; }
+.rte .paren, .print .paren { margin: 0 1.5in 0 1.6in; }
+.rte .dlg, .print .dlg { margin: 0 1.3in 1em 1in; }
+.rte .trans, .print .trans { text-transform: uppercase; text-align: right; margin: 1em 0; }
+
+/* PDF only */
+body.print { margin: 0; }
+.print .sheet-title { font-size: 28pt; font-weight: 700; margin: 0 0 .2em; }
+.print .sheet-sub { color: #666; margin: 0 0 1.4em; }
+.print .part { break-before: page; }
+.print .part:first-of-type { break-before: auto; }
+.print .panels { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; font: 9.5pt/1.35 Arial, sans-serif; }
+.print .panel { break-inside: avoid; border: 1px solid #bbb; padding: 6px; }
+.print .panel img, .print .panel .blank { display: block; width: 100%; aspect-ratio: 16/9; background: #fff; border: 1px solid #ddd; box-sizing: border-box; }
+.print .panel b { font-size: 10pt; }
+.print .panel p { margin: 3px 0 0; white-space: pre-wrap; }
+.print .portrait { float: right; width: 2.2in; margin: 0 0 1em 1em; }
+.print dl { display: grid; grid-template-columns: auto 1fr; gap: 3px 14px; margin: 0 0 1.2em; }
+.print dt { font-weight: 700; }
+.print dd { margin: 0; }
