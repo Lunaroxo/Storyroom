@@ -9,8 +9,7 @@
   "scripts": {
     "start": "electron .",
     "test": "node --test",
-    "installer": "electron-builder --win --publish never",
-    "release": "node release.js"
+    "installer": "electron-builder --win --publish never"
   },
   "build": {
     "appId": "com.lunaroxo.storyroom",

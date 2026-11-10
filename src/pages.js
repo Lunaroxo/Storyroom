@@ -40,15 +40,39 @@ function pagesView(root, { kinds, heading, defaultKind }) {
     drawPage();
   }
 
+  // Versions (another dimension, age, costume...) are pages with `parent` set, listed under it.
+  const versionsOf = (p) => pages().filter((x) => x.parent === p.id);
+  const family = (p) => [p, ...versionsOf(p).flatMap(family)];
+
+  async function addVersion(base) {
+    const name = await dialogBox({ title: `New version of ${base.name}`, text: 'Another dimension, age, form or outfit. It starts as a copy you can change.', input: `${base.name} (alt)`, okText: 'Add' });
+    if (!name) return;
+    commitEditors();
+    const version = { ...structuredClone(base), id: uid(), name, parent: base.id, html: '<p><br></p>' };
+    delete version.open;
+    base.open = true;
+    S.pages.push(version);
+    touch();
+    pick(version);
+  }
+
   function drawList() {
     const cur = current();
-    list.replaceChildren(...pages().filter((p) => p.name.toLowerCase().includes(filter)).map((p) => {
-      const row = h('div', { class: `page-row ${p === cur ? 'on' : ''}`, onclick: () => pick(p) },
+    const all = pages();
+    const row = (p, depth, withVersions) => {
+      const versions = withVersions ? versionsOf(p) : [];
+      const el = h('div', { class: `page-row ${p === cur ? 'on' : ''}`, style: `margin-left:${depth * 18}px`, onclick: () => pick(p) },
+        h('button', { class: `caret ${versions.length ? '' : 'hide'}`, type: 'button', title: p.open === false ? 'Show versions' : 'Hide versions', onclick: (e) => { e.stopPropagation(); p.open = p.open === false; touch(); drawList(); } }, p.open === false ? '▸' : '▾'),
         p.image ? h('img', { src: url(p.image), alt: '' }) : h('div', { class: 'thumb-blank' }, (p.name[0] || '?').toUpperCase()),
-        h('div', { class: 'grow ellipsis' }, p.name || 'Untitled', kinds.length > 1 && h('small', {}, WORLD_KINDS.find(([k]) => k === p.kind)?.[1])));
-      sortable(row, row, S.pages, p, drawList);
-      return row;
-    }));
+        h('div', { class: 'grow ellipsis' }, p.name || 'Untitled', kinds.length > 1 && h('small', {}, WORLD_KINDS.find(([k]) => k === p.kind)?.[1])),
+        h('button', { class: 'x', type: 'button', title: 'Add a version of this', onclick: (e) => { e.stopPropagation(); addVersion(p); } }, '+'));
+      sortable(el, el, S.pages, p, drawList);
+      return [el, ...(p.open === false ? [] : versions.flatMap((v) => row(v, depth + 1, true)))];
+    };
+    const shown = filter
+      ? all.filter((p) => p.name.toLowerCase().includes(filter)).flatMap((p) => row(p, 0, false))
+      : all.filter((p) => !all.some((x) => x.id === p.parent)).flatMap((p) => row(p, 0, true));
+    list.replaceChildren(...shown);
   }
 
   function exportPage(p) {
@@ -64,10 +88,11 @@ function pagesView(root, { kinds, heading, defaultKind }) {
   function drawPage() {
     const p = current();
     if (!p) return pane.replaceChildren(h('div', { class: 'empty-state' }, h('h2', {}, `No ${heading.toLowerCase()} yet`), btn(`Add ${heading === 'Characters' ? 'a character' : 'a page'}`, add, 'primary')));
+    const parentPage = S.pages.find((x) => x.id === p.parent);
     const fields = h('div', { class: 'fields' });
     const drawFields = () => fields.replaceChildren(...p.fields.map((f) => h('div', { class: 'kv' },
       bind(f, 'k', { class: 'k', 'aria-label': 'Field name' }),
-      bind(f, 'v', { class: 'v', 'aria-label': f.k || 'Field value', placeholder: '...' }),
+      bind(f, 'v', { class: 'v wrap-box', rows: 1, 'aria-label': f.k || 'Field value', placeholder: '...' }, 'textarea'),
       h('button', { class: 'x show', type: 'button', title: 'Remove field', onclick: () => { p.fields.splice(p.fields.indexOf(f), 1); touch(); drawFields(); } }, '×'))),
     btn('+ Field', () => { p.fields.push({ k: 'New field', v: '' }); touch(); drawFields(); }, 'ghost'));
     drawFields();
@@ -90,7 +115,15 @@ function pagesView(root, { kinds, heading, defaultKind }) {
             h('div', { class: 'row' },
               kinds.length > 1 && select(WORLD_KINDS, p.kind, (v) => { p.kind = v; touch(); drawList(); }, { 'aria-label': 'Page type' }),
               btn('PDF', () => exportPage(p)),
-              btn('Delete', async () => { if (await confirmDelete(p.name)) { S.pages.splice(S.pages.indexOf(p), 1); touch(); pick(pages()[0]); } }, 'danger-text'))),
+              btn('+ Version', () => addVersion(p)),
+              btn('Delete', async () => {
+                const doomed = family(p);
+                if (!(await confirmDelete(doomed.length > 1 ? `${p.name} and its ${doomed.length - 1} version(s)` : p.name))) return;
+                S.pages = S.pages.filter((x) => !doomed.includes(x));
+                touch();
+                pick(pages()[0]);
+              }, 'danger-text'))),
+          parentPage && h('button', { class: 'link', type: 'button', onclick: () => pick(parentPage) }, `Version of ${parentPage.name}`),
           fields,
           h('div', { class: 'row palette' }, h('span', { class: 'muted' }, 'Palette'), colors),
           h('p', { class: 'muted' }, seen.length ? `Mentioned in: ${seen.map((e) => e.title).join(', ')}` : 'Not mentioned in any episode yet'))),

@@ -18,7 +18,7 @@ VIEW.production = (root) => {
       ondrop: (e) => { if (draggedTask && draggedTask !== task) { e.preventDefault(); e.stopPropagation(); moveTask(draggedTask, task.column, task); } } },
     h('div', { class: 'row tight' },
       h('span', { class: 'grip', draggable: true, title: 'Drag to move', ondragstart: (e) => { draggedTask = task; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setDragImage(el, 10, 10); }, ondragend: () => { draggedTask = null; } }, '⠇'),
-      bind(task, 'title', { class: 'grow card-title', placeholder: 'Task', 'aria-label': 'Task' }),
+      bind(task, 'title', { class: 'grow card-title wrap-box', rows: 1, placeholder: 'Task', 'aria-label': 'Task' }, 'textarea'),
       h('button', { class: 'x show', type: 'button', title: 'Delete task', onclick: () => { S.tasks.splice(S.tasks.indexOf(task), 1); touch(); draw(); } }, '×')),
     h('div', { class: 'row tight' },
       select([['', 'Whole show'], ...S.episodes.map((e) => [e.id, e.title])], task.ep, (v) => { task.ep = v; touch(); }, { class: 'grow', 'aria-label': 'Episode' }),

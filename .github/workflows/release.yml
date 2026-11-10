@@ -1,0 +1,31 @@
+﻿# Every push to main builds the Windows installer and publishes it as a GitHub release.
+# Installed copies of Storyroom pick it up within a minute.
+name: Release
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: write
+concurrency: release
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      # Each run gets a higher version than the last, which is what the updater compares.
+      - name: Set version and tag
+        shell: bash
+        run: |
+          VERSION="1.1.${{ github.run_number }}"
+          npm version "$VERSION" --no-git-tag-version
+          git tag "v$VERSION"
+          git push origin "v$VERSION"
+      - run: npx electron-builder --win --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -319,3 +319,15 @@ body { background: radial-gradient(1100px 620px at 88% -8%, #f0a94b14, transpare
 
 .toast.update { display: flex; align-items: center; gap: 8px; border-color: var(--accent); }
 
+
+/* Single-line-looking boxes that wrap long text and grow taller, like a normal text box. */
+textarea.wrap-box { field-sizing: content; resize: none; overflow: hidden; width: 100%; min-height: 0; line-height: 1.4; }
+.kv { align-items: flex-start; }
+.kv .k { padding-top: 7px; }
+.todo-row { align-items: flex-start; }
+.todo-row > :not(.todo-text) { margin-top: 5px; }
+
+
+.caret.hide { visibility: hidden; }
+.page-row .caret { flex: none; }
+

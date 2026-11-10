@@ -23,7 +23,7 @@ VIEW.todo = (root) => {
         touch();
         setTimeout(() => draw(), 350); // lets the check animation finish before the row leaves
       } }),
-      bind(item, 'text', { class: 'grow todo-text', 'aria-label': 'To do' }),
+      bind(item, 'text', { class: 'grow todo-text wrap-box', rows: 1, 'aria-label': 'To do' }, 'textarea'),
       select([['', 'Whole show'], ...S.episodes.map((e) => [e.id, e.title])], item.ep, (v) => { item.ep = v; touch(); }, { 'aria-label': 'Episode' }),
       h('button', { class: 'x show', type: 'button', title: 'Delete', onclick: () => { S.todos.splice(S.todos.indexOf(item), 1); touch(); draw(); } }, '×'));
     sortable(el.firstChild, el, S.todos, item, draw);
