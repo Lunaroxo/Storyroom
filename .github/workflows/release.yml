@@ -26,6 +26,11 @@ jobs:
           npm version "$VERSION" --no-git-tag-version
           git tag "v$VERSION"
           git push origin "v$VERSION"
+          # Create the release up front: electron-builder uploads files in parallel and, left to
+          # create it itself, can make two releases for one tag.
+          gh release create "v$VERSION" --title "$VERSION" --notes "Automatic build of ${{ github.sha }}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - run: npx electron-builder --win --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
