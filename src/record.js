@@ -4,20 +4,22 @@
 const WORKLET_URL = new URL('rec-worklet.js', document.currentScript.src).href;
 const rec = { takes: [], device: '', live: null, count: 0 };
 
-function encodeWav(channels, sampleRate) {
+function encodeWav(channels, sampleRate, bits = 24) {
+  const bytes = bits / 8;
   const frames = channels[0].length;
   const n = channels.length;
-  const buf = new ArrayBuffer(44 + frames * n * 3);
+  const buf = new ArrayBuffer(44 + frames * n * bytes);
   const v = new DataView(buf);
   const str = (o, s) => [...s].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
-  str(0, 'RIFF'); v.setUint32(4, 36 + frames * n * 3, true); str(8, 'WAVEfmt ');
+  str(0, 'RIFF'); v.setUint32(4, 36 + frames * n * bytes, true); str(8, 'WAVEfmt ');
   v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, n, true); v.setUint32(24, sampleRate, true);
-  v.setUint32(28, sampleRate * n * 3, true); v.setUint16(32, n * 3, true); v.setUint16(34, 24, true);
-  str(36, 'data'); v.setUint32(40, frames * n * 3, true);
+  v.setUint32(28, sampleRate * n * bytes, true); v.setUint16(32, n * bytes, true); v.setUint16(34, bits, true);
+  str(36, 'data'); v.setUint32(40, frames * n * bytes, true);
   let o = 44;
   for (let i = 0; i < frames; i++) {
     for (let c = 0; c < n; c++) {
       const s = Math.max(-1, Math.min(1, channels[c][i]));
+      if (bytes === 2) { v.setInt16(o, Math.round(s < 0 ? s * 0x8000 : s * 0x7fff), true); o += 2; continue; }
       const x = Math.round(s < 0 ? s * 0x800000 : s * 0x7fffff);
       v.setUint8(o, x & 255); v.setUint8(o + 1, (x >> 8) & 255); v.setUint8(o + 2, (x >> 16) & 255);
       o += 3;
@@ -56,7 +58,7 @@ async function startRecording(onLevel) {
       const out = Array.from({ length: channels }, () => new Float32Array(frames));
       let at = 0;
       for (const b of blocks) { out.forEach((ch, c) => ch.set(b[c] || b[0], at)); at += b[0].length; }
-      const wav = encodeWav(out, ctx.sampleRate);
+      const wav = encodeWav(out, ctx.sampleRate, +settings.recBits || 24);
       rec.count++;
       return { id: uid(), name: `Take ${rec.count}`, wav, url: URL.createObjectURL(new Blob([wav], { type: 'audio/wav' })), secs: frames / ctx.sampleRate, peak, rate: ctx.sampleRate, channels, saved: false };
     },
@@ -68,8 +70,9 @@ function saveTakeDialog(take) {
     const L = S.library;
     const name = h('input', { value: take.name, class: 'wide', 'aria-label': 'Take name' });
     const NEW = '\u0000new';
-    const folder = select([...L.folders.map((f) => [f, f]), ['', 'No folder'], [NEW, '+ New folder...']], L.folders.includes('Voice Takes') ? 'Voice Takes' : (L.folders[0] || ''), () => { newName.classList.toggle('off', folder.value !== NEW); }, { 'aria-label': 'Folder', class: 'wide' });
-    const newName = h('input', { class: 'wide off', placeholder: 'Folder name', value: 'Voice Takes', 'aria-label': 'New folder name' });
+    const want = settings.recFolder || 'Voice Takes';
+    const folder = select([...L.folders.map((f) => [f, f]), ['', 'No folder'], [NEW, '+ New folder...']], L.folders.includes(want) ? want : (L.folders[0] || ''), () => { newName.classList.toggle('off', folder.value !== NEW); }, { 'aria-label': 'Folder', class: 'wide' });
+    const newName = h('input', { class: 'wide off', placeholder: 'Folder name', value: want, 'aria-label': 'New folder name' });
     const close = (v) => { overlay.remove(); resolve(v); };
     const overlay = h('div', { class: 'overlay', role: 'dialog', 'aria-modal': 'true' },
       h('form', { class: 'dialog', onsubmit: (e) => { e.preventDefault(); close({ name: name.value.trim() || take.name, folder: folder.value === NEW ? newName.value.trim() : folder.value }); }, onkeydown: (e) => { if (e.key === 'Escape') close(null); } },
@@ -77,7 +80,7 @@ function saveTakeDialog(take) {
         h('label', { class: 'field' }, h('span', {}, 'Name'), name),
         h('label', { class: 'field' }, h('span', {}, 'Folder'), folder, newName),
         h('div', { class: 'row end' }, h('button', { type: 'button', class: 'btn', onclick: () => close(null) }, 'Cancel'), h('button', { type: 'submit', class: 'btn primary' }, 'Save'))));
-    if (!L.folders.includes('Voice Takes')) { folder.value = NEW; newName.classList.remove('off'); } // defaults to a new "Voice Takes"
+    if (!L.folders.includes(want)) { folder.value = NEW; newName.classList.remove('off'); } // defaults to a new folder with that name
     document.body.append(overlay);
     name.select();
   });

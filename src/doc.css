@@ -1,5 +1,6 @@
 /* Styles for written documents. Shared by the editor and PDF export. */
 .rte, body.print { font: 12pt/1.5 Georgia, 'Times New Roman', serif; color: #1d1c1a; }
+.rte { font-size: var(--doc-size, 12pt); font-family: var(--doc-font, Georgia, 'Times New Roman', serif); }
 .rte p, body.print p { margin: 0 0 .7em; }
 .rte h1, body.print h1 { font-size: 26pt; line-height: 1.2; margin: .4em 0 .4em; }
 .rte h2, body.print h2 { font-size: 19pt; line-height: 1.25; margin: .8em 0 .4em; }

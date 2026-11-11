@@ -70,12 +70,18 @@ function touch() {
   $('#saveState') && ($('#saveState').textContent = 'Saving...');
   clearTimeout(saveTimer);
   saveTimer = setTimeout(saveNow, 600);
+  collabChanged();
 }
 
 function saveNow() {
   clearTimeout(saveTimer);
   if (!dirty || switching) return;
   commitEditors();
+  if (collab.role === 'guest') { // a guest's copy belongs to the host; never saved here
+    dirty = false;
+    $('#saveState').textContent = 'Shared';
+    return;
+  }
   const error = api.save(JSON.stringify(S));
   if (error) return toast(`Could not save: ${error}`, true);
   dirty = false;
@@ -138,10 +144,18 @@ function buildRail() {
     b.innerHTML = icon(path);
     b.append(h('span', {}, label));
     return b;
-  }), h('div', { class: 'spring' }), h('div', { id: 'saveState' }, 'Saved'));
+  }), h('div', { class: 'spring' }),
+  h('button', { id: 'livePill', class: 'live-pill off', type: 'button', title: 'Writing together', onclick: () => { ui.settingsTab = 'Collaboration'; go('settings'); } }),
+  (() => {
+    const gear = h('button', { class: 'rail-btn', type: 'button', onclick: () => go('settings'), 'data-view': 'settings' });
+    gear.innerHTML = icon('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>');
+    gear.append(h('span', {}, 'Settings'));
+    return gear;
+  })(),
+  h('div', { id: 'saveState' }, 'Saved'));
 }
 
-function go(id) {
+function go(id, { quiet } = {}) {
   saveNow();
   closeEditors();
   ui.view = id;
@@ -152,6 +166,7 @@ function go(id) {
   if (id === 'find') VIEW.find();
   else { host.replaceChildren(); VIEW[id](host); }
   // Only on section change: inner redraws happen on every keystroke and must not re-animate.
+  if (quiet) return;
   host.classList.remove('view-in');
   void host.offsetWidth;
   host.classList.add('view-in');
@@ -215,7 +230,7 @@ VIEW.show = (root) => {
   root.append(h('div', { class: 'scroll' }, h('div', { class: 'column' },
     h('div', { class: 'row between' },
       h('p', { class: 'eyebrow' }, 'Series overview'),
-      h('div', { class: 'row' }, btn('Backups', openBackups), btn('New show...', () => switchShow(true)), btn('Open show...', () => switchShow(false)))),
+      collab.role !== 'guest' && h('div', { class: 'row' }, btn('Backups', openBackups), btn('New show...', () => switchShow(true)), btn('Open show...', () => switchShow(false)))),
     bind(s, 'title', { class: 'title-input', placeholder: 'Show title', 'aria-label': 'Show title' }),
     bind(s, 'logline', { class: 'wide logline', placeholder: 'One-sentence logline', rows: 2, 'aria-label': 'Logline' }, 'textarea'),
     h('div', { class: 'stats' }, stats.map(([k, v]) => h('div', { class: 'stat' }, h('b', {}, String(v)), h('span', {}, k)))),

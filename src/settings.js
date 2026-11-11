@@ -1,0 +1,147 @@
+'use strict';
+// App-wide settings (not per show). Stored in this PC's app data; main-process ones are pushed over IPC.
+const SETTINGS_DEFAULTS = {
+  theme: 'cozy', accent: '', zoom: '1', waves: 'on', motion: true, glass: true,
+  paper: 'cream', docFont: '', docSize: '12', pageWidth: 'normal', spellcheck: true, proofMode: 'off', refs: true, wordCount: true,
+  backupEvery: '2', backupKeepDays: '2',
+  addFolder: '', disabledSources: [],
+  recFolder: 'Voice Takes', recBits: '24',
+  autoUpdate: true,
+  myName: '', askJoin: true, guestDefault: 'view',
+};
+
+function loadSettings() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('settings') || '{}');
+    if (!('proofMode' in saved) && localStorage.getItem('proofMode')) saved.proofMode = localStorage.getItem('proofMode'); // older versions
+    return { ...SETTINGS_DEFAULTS, ...saved };
+  } catch {
+    return { ...SETTINGS_DEFAULTS };
+  }
+}
+const settings = loadSettings();
+let redrawSettings = null; // set while the Settings page is open
+
+function setSetting(key, value) {
+  settings[key] = value;
+  try { localStorage.setItem('settings', JSON.stringify(settings)); } catch { /* still applies for this run */ }
+  applySettings();
+}
+
+function applySettings() {
+  const b = document.body;
+  const root = b.style; // on body, so it beats the theme's own colors
+  b.dataset.theme = settings.theme;
+  b.dataset.waves = settings.waves;
+  b.dataset.paper = settings.paper;
+  b.dataset.width = settings.pageWidth;
+  b.classList.toggle('no-motion', !settings.motion);
+  b.classList.toggle('solid', !settings.glass);
+  b.classList.toggle('no-wordcount', !settings.wordCount);
+  if (settings.accent) {
+    const [r, g, bl] = [1, 3, 5].map((i) => parseInt(settings.accent.slice(i, i + 2), 16));
+    root.setProperty('--accent', settings.accent);
+    root.setProperty('--accent-ink', (0.299 * r + 0.587 * g + 0.114 * bl) > 150 ? '#1d1508' : '#ffffff');
+  } else {
+    root.removeProperty('--accent');
+    root.removeProperty('--accent-ink');
+  }
+  if (settings.docFont) root.setProperty('--doc-font', `'${settings.docFont}', Georgia, serif`); else root.removeProperty('--doc-font');
+  root.setProperty('--doc-size', `${settings.docSize}pt`);
+  api.setZoom(+settings.zoom || 1);
+  document.querySelectorAll('.rte').forEach((e) => { e.spellcheck = settings.spellcheck; });
+  api['settings:main']({ backupEvery: +settings.backupEvery, keepDays: +settings.backupKeepDays, autoUpdate: settings.autoUpdate, disabledSources: settings.disabledSources, spellcheck: settings.spellcheck });
+}
+
+const THEMES = [
+  ['cozy', 'Cozy', ['#17181c', '#1f2026', '#f0a94b']],
+  ['midnight', 'Midnight', ['#11151f', '#182033', '#6ea8fe']],
+  ['forest', 'Forest', ['#141a16', '#1b241e', '#8fcf7a']],
+  ['plum', 'Plum', ['#1a1520', '#241d2c', '#e58fc3']],
+  ['paper', 'Paper (light)', ['#f4f1ea', '#fffdf8', '#c7741f']],
+  ['contrast', 'High contrast', ['#000000', '#0d0d0d', '#ffd400']],
+];
+
+VIEW.settings = (root) => {
+  ui.settingsTab ||= 'Appearance';
+  const groups = ['Appearance', 'Writing', 'Saving & backups', 'Sounds & library', 'Recording', 'Collaboration', 'Updates', 'About'];
+  const body = h('div', { class: 'set-body' });
+  const nav = h('nav', { class: 'set-nav', 'aria-label': 'Settings sections' });
+
+  const row = (label, help, control) => h('div', { class: 'set-row' }, h('div', { class: 'set-text' }, h('div', { class: 'set-label' }, label), help && h('div', { class: 'muted' }, help)), control);
+  const sel = (key, options, after) => select(options, String(settings[key]), (v) => { setSetting(key, v); after?.(v); }, { 'aria-label': key });
+  const tog = (key) => h('input', { type: 'checkbox', class: 'switch', checked: !!settings[key], 'aria-label': key, onchange: (e) => setSetting(key, e.target.checked) });
+
+  const pages = {
+    Appearance: () => [
+      h('div', { class: 'theme-grid' }, THEMES.map(([id, label, [bg, panel, accent]]) => h('button', { type: 'button', class: `theme-card ${settings.theme === id ? 'on' : ''}`, onclick: () => { setSetting('theme', id); draw(); } },
+        h('div', { class: 'theme-swatch', style: `background:${bg}` }, h('i', { style: `background:${panel}` }), h('b', { style: `background:${accent}` })), label))),
+      row('Accent color', 'Buttons, highlights and the active section.', h('div', { class: 'row' },
+        h('input', { type: 'color', value: settings.accent || '#f0a94b', 'aria-label': 'Accent color', onchange: (e) => setSetting('accent', e.target.value) }),
+        btn('Use theme color', () => { setSetting('accent', ''); draw(); }))),
+      row('Interface size', 'Makes everything bigger or smaller.', sel('zoom', [['0.85', 'Small'], ['1', 'Normal'], ['1.15', 'Large'], ['1.3', 'Extra large']])),
+      row('Background waves', null, sel('waves', [['on', 'On'], ['soft', 'Softer'], ['off', 'Off']])),
+      row('Animations', 'Fades, slides and hover motion.', tog('motion')),
+      row('See-through panels', 'Lets the background show through side panels.', tog('glass')),
+    ],
+    Writing: () => [
+      row('Paper', 'The page you write on.', sel('paper', [['cream', 'Cream'], ['white', 'White'], ['dark', 'Dark']])),
+      row('Default font', 'Text you have not given a font yet.', select([['', 'Georgia (default)'], ...fontList.map((f) => [f, f])], settings.docFont, (v) => setSetting('docFont', v), { 'aria-label': 'Default font' })),
+      row('Default text size', null, sel('docSize', ['10', '11', '12', '13', '14', '16', '18', '20'].map((s) => [s, `${s} pt`]))),
+      row('Page width', null, sel('pageWidth', [['narrow', 'Narrow'], ['normal', 'Normal (letter)'], ['wide', 'Wide']])),
+      row('Spell check', 'Red underlines and right-click fixes.', tog('spellcheck')),
+      row('Proofread', 'Spacing fixes stay on this PC. Grammar sends text to languagetool.org.', select([['off', 'Off'], ['local', 'Spelling + spacing'], ['grammar', '+ Grammar (LanguageTool)']], proofMode(), async (v) => {
+        if (v === 'grammar' && proofMode() !== 'grammar' && !(await dialogBox({ title: 'Use online grammar checking?', text: 'Grammar checks send the text you are proofreading to LanguageTool (languagetool.org).', okText: 'Use LanguageTool' }))) return draw();
+        setProofMode(v);
+      }, { 'aria-label': 'Proofread' })),
+      row('Ctrl shows references', 'Hold Ctrl to see character and world names in blue.', tog('refs')),
+      row('Word count', 'The count under the writing page.', tog('wordCount')),
+    ],
+    'Saving & backups': () => [
+      row('Back up every', 'Only when something changed. Your work also saves the moment you type.', sel('backupEvery', [['1', '1 minute'], ['2', '2 minutes'], ['5', '5 minutes'], ['10', '10 minutes'], ['30', '30 minutes']])),
+      row('Keep every backup for', 'After that, one per day is kept.', sel('backupKeepDays', [['2', '2 days'], ['7', '1 week'], ['30', '1 month']])),
+      row('Backups', 'Go back to any saved time, or import a backup file.', btn('Open backups', openBackups, 'primary')),
+      row('Show folder', 'Where this show and its files live.', btn('Open folder', () => api['app:openFolder']('show'))),
+    ],
+    'Sounds & library': () => [
+      row('Added sounds go to', 'Folder for sounds added from Find Sounds.', sel('addFolder', [['', 'No folder'], ...S.library.folders.map((f) => [f, f])])),
+      h('h3', { class: 'set-sub' }, 'Search these sites'),
+      sourceList,
+    ],
+    Recording: () => [
+      row('Save takes to', 'Default library folder for new takes.', h('input', { value: settings.recFolder, 'aria-label': 'Default take folder', onchange: (e) => setSetting('recFolder', e.target.value.trim() || 'Voice Takes') })),
+      row('Bit depth', '24-bit keeps the most detail. 16-bit files are smaller.', sel('recBits', [['24', '24-bit'], ['16', '16-bit']])),
+    ],
+    Collaboration: () => [collabPanel()],
+    Updates: () => [
+      row('Update automatically', 'Checks when the app opens and every minute.', tog('autoUpdate')),
+      row('Check now', null, btn('Check for updates', async () => toast(await api['update:check']()), 'primary')),
+      versionRow,
+    ],
+    About: () => [
+      versionRow,
+      row('Show folder', null, btn('Open folder', () => api['app:openFolder']('show'))),
+      row('Reset settings', 'Back to how they were when you installed.', btn('Reset', async () => {
+        if (!(await dialogBox({ title: 'Reset all settings?', text: 'Your shows are not touched.', okText: 'Reset', danger: true }))) return;
+        Object.keys(settings).forEach((k) => delete settings[k]);
+        Object.assign(settings, structuredClone(SETTINGS_DEFAULTS));
+        setSetting('theme', settings.theme);
+        draw();
+      }, 'danger-text')),
+    ],
+  };
+
+  const versionRow = row('Version', null, h('span', { class: 'muted' }, '...'));
+  api['app:version']().then((v) => { versionRow.lastChild.textContent = `Storyroom ${v}`; });
+  const sourceList = h('div', { class: 'source-list' });
+  api['find:sources']().then((names) => sourceList.replaceChildren(...names.map((n) => h('label', { class: 'source-item' },
+    h('input', { type: 'checkbox', checked: !settings.disabledSources.includes(n), onchange: (e) => setSetting('disabledSources', e.target.checked ? settings.disabledSources.filter((x) => x !== n) : [...settings.disabledSources, n]) }), n))));
+
+  function draw() {
+    nav.replaceChildren(...groups.map((g) => h('button', { type: 'button', class: `set-tab ${ui.settingsTab === g ? 'on' : ''}`, onclick: () => { ui.settingsTab = g; draw(); } }, g)));
+    body.replaceChildren(h('h1', { class: 'view-title' }, ui.settingsTab), ...pages[ui.settingsTab]());
+  }
+  draw();
+  root.append(h('aside', { class: 'side set-side' }, h('div', { class: 'side-head' }, h('h2', {}, 'Settings')), nav), h('section', { class: 'pane' }, h('div', { class: 'scroll' }, h('div', { class: 'column' }, body))));
+  redrawSettings = draw;
+};

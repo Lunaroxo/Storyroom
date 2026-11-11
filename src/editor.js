@@ -246,7 +246,10 @@ function imageTools(paper, ed) {
 }
 
 function makeEditor(obj, key, { onInput, placeholder, tall } = {}) {
-  const ed = h('div', { class: 'rte', contentEditable: 'true', spellcheck: true, role: 'textbox', 'aria-multiline': 'true', 'data-placeholder': placeholder || '' });
+  const ed = h('div', { class: 'rte', contentEditable: 'true', spellcheck: settings.spellcheck, role: 'textbox', 'aria-multiline': 'true', 'data-placeholder': placeholder || '', 'data-doc': `${obj.id || 'show'}:${key}` });
+  // Tells people writing together which document this person is in.
+  ed.addEventListener('focus', () => collabFocus(ed.dataset.doc));
+  ed.addEventListener('blur', () => collabFocus(null));
   ed.innerHTML = obj[key] || '<p><br></p>';
   const commit = () => { if (obj[key] !== ed.innerHTML) obj[key] = ed.innerHTML; };
   live.push({ el: ed, commit });

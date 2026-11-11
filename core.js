@@ -78,9 +78,9 @@ function parseYtdlp(line) {
 // Backup file name for a moment in local time: project-2026-11-10_14-02-00.json
 const backupName = (d) => `project-${[d.getFullYear(), d.getMonth() + 1, d.getDate()].map((n) => String(n).padStart(2, '0')).join('-')}_${[d.getHours(), d.getMinutes(), d.getSeconds()].map((n) => String(n).padStart(2, '0')).join('-')}.json`;
 
-// Which backups to delete: everything from the last 2 days stays, older days keep their last one.
-function backupsToPrune(names, now) {
-  const recent = now - 2 * 24 * 3600 * 1000;
+// Which backups to delete: everything from the last keepDays days stays, older days keep their last one.
+function backupsToPrune(names, now, keepDays = 2) {
+  const recent = now - keepDays * 24 * 3600 * 1000;
   const keepPerDay = new Map();
   const doomed = [];
   for (const name of [...names].sort()) {

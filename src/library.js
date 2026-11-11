@@ -1,5 +1,6 @@
 'use strict';
 const audio = new Audio();
+const fetchedSounds = new Set(); // guest: sounds already asked from the host
 let nowPlaying = null;
 
 function refreshLibTitles() {
@@ -48,7 +49,16 @@ function buildPlayer() {
     if (audio.duration) seek.value = (audio.currentTime / audio.duration) * 1000;
     time.textContent = `${clock(audio.currentTime)} / ${clock(audio.duration)}`;
   });
-  audio.addEventListener('error', () => { if (nowPlaying) toast(nowPlaying.id ? `Cannot preview this file type: ${nowPlaying.file.split('.').pop()}. It is still in your library.` : 'This site will not play a preview here. You can still try Add.', true); });
+  audio.addEventListener('error', () => {
+    // A guest's sounds live on the host: fetch once, then play.
+    if (collab.role === 'guest' && nowPlaying?.id && !fetchedSounds.has(nowPlaying.file)) {
+      const item = nowPlaying;
+      fetchedSounds.add(item.file);
+      toast('Getting this sound from the host...');
+      requestFile(item.file).then(() => playItem(item));
+      return;
+    }
+    if (nowPlaying) toast(nowPlaying.id ? `Cannot preview this file type: ${nowPlaying.file.split('.').pop()}. It is still in your library.` : 'This site will not play a preview here. You can still try Add.', true); });
   buildPlayer.show = (t) => { title.textContent = t; };
   $('#player').append(play, title, seek, time, loop, h('span', { class: 'muted' }, 'Vol'), vol);
 }

@@ -38,7 +38,7 @@ function onDownloadUpdate(d) {
 }
 
 function onDownloadDone(info) {
-  addToLibrary([info], { kind: 'sound' });
+  addToLibrary([info], { kind: 'sound', folder: settings.addFolder });
   refreshLibTitles();
   toast(`Added to Sounds: ${info.title}`);
   finder.results.filter((r) => r.page === info.sourceUrl).forEach((r) => { r.state = 'added'; });
@@ -60,7 +60,7 @@ async function addResult(r) {
   finder.draw();
   try {
     if (r.audio) {
-      addToLibrary([await api['find:add']({ audio: r.audio, title: r.title, artist: r.artist, license: r.license, page: r.page, source: r.source })], { kind: 'sound' });
+      addToLibrary([await api['find:add']({ audio: r.audio, title: r.title, artist: r.artist, license: r.license, page: r.page, source: r.source })], { kind: 'sound', folder: settings.addFolder });
       refreshLibTitles();
       r.state = 'added';
       toast(`Added to Sounds: ${r.title}`);

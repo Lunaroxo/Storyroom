@@ -30,6 +30,12 @@ function upgrade(project) {
   buildPlayer();
   api.onDownload(onDownloadUpdate, onDownloadDone);
   api.onResults(onSearchResults);
+  api.onFileWritten(onFileWritten);
+  applySettings();
+  try {
+    const left = sessionStorage.getItem('afterLeave');
+    if (left) { sessionStorage.removeItem('afterLeave'); toast(left); }
+  } catch { /* nothing to show */ }
   api.onUpdate((version) => {
     if ($('.toast.update')) return;
     $('#toasts').append(h('div', { class: 'toast update' }, `Storyroom ${version} is ready. `,

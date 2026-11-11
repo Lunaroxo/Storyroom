@@ -76,7 +76,7 @@ function openPage(page) {
 
 // Waits a moment, so Ctrl+B and other shortcuts do not flash every name blue.
 addEventListener('keydown', (e) => {
-  if (e.key === 'Control' && !e.repeat) ctrlTimer = setTimeout(showRefs, 180);
+  if (e.key === 'Control' && !e.repeat && settings.refs) ctrlTimer = setTimeout(showRefs, 180);
   else if (e.key !== 'Control') clearTimeout(ctrlTimer);
 });
 addEventListener('keyup', (e) => { if (e.key === 'Control') hideRefs(); });
@@ -85,7 +85,7 @@ document.addEventListener('mousemove', (e) => {
   if (document.body.classList.contains('ctrl-refs')) document.body.classList.toggle('over-ref', !!(e.target.closest?.('.rte') && refAt(e)));
 });
 document.addEventListener('mousedown', (e) => {
-  if (!e.ctrlKey || !e.target.closest?.('.rte')) return;
+  if (!e.ctrlKey || !settings.refs || !e.target.closest?.('.rte')) return;
   if (!refs.length) showRefs();
   const page = refAt(e);
   if (!page) return;
@@ -102,11 +102,11 @@ function linkSelectionTo(pageId) {
 // --- Proofreading ------------------------------------------------------------------------------
 const issues = new WeakMap(); // editor -> [{range, message, replacements}]
 const proofTimers = new WeakMap();
-const proofMode = () => { try { return localStorage.getItem('proofMode') || 'off'; } catch { return 'off'; } };
+const proofMode = () => settings.proofMode || 'off';
 let grammarWarned = false;
 
 function setProofMode(mode) {
-  try { localStorage.setItem('proofMode', mode); } catch { /* setting just won't stick */ }
+  setSetting('proofMode', mode);
   document.querySelectorAll('.rte').forEach((ed) => (mode === 'off' ? issues.delete(ed) : proofread(ed)));
   if (mode === 'off') drawProof();
 }

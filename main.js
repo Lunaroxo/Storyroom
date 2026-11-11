@@ -8,13 +8,25 @@ const SOURCES = require('./sources');
 const { autoUpdater } = require('electron-updater');
 
 let win;
-let root; // the open show's folder
+let root; // the open show's folder (or a guest's temporary copy while writing together)
+let guestMode = false;
+const cfg = { backupEvery: 2, keepDays: 2, autoUpdate: true, disabledSources: [] }; // from Settings
+let backupTimer = null;
 
 const configFile = () => path.join(app.getPath('userData'), 'config.json');
 const projectFile = () => path.join(root, 'project.json');
 const libDir = () => path.join(root, 'library');
 const ytBin = () => path.join(app.getPath('userData'), 'bin', 'yt-dlp.exe');
 const send = (channel, data) => { if (win && !win.isDestroyed()) win.webContents.send(channel, data); };
+
+// New files get a random tag while visiting someone's show, so they can never replace the host's files.
+const freshPath = (dir, name) => {
+  if (!guestMode) return core.uniquePath(dir, name);
+  const { name: stem, ext } = path.parse(name);
+  return core.uniquePath(dir, `${stem} ${Math.random().toString(36).slice(2, 7)}${ext}`);
+};
+// Lets the page pass new files on to the host when writing together.
+const noteWrite = (full) => send('file:written', path.relative(root, full).split(path.sep).join('/'));
 
 function openRoot(dir) {
   root = dir;
@@ -53,12 +65,17 @@ function saveProject(text) {
 let words = null;
 const commonWords = () => (words ||= new Set(['10', '20', '35', '40', '50'].flatMap((n) => require('wordlist-english')[`english/${n}`]).map((w) => w.toLowerCase())));
 
-// --- Backups: a silent copy every 2 minutes when something changed ---------------------------
+function restartBackups() {
+  clearInterval(backupTimer);
+  backupTimer = setInterval(() => { try { backupNow(false); } catch { /* disk busy: next round */ } }, cfg.backupEvery * 60 * 1000);
+}
+
+// --- Backups: a silent copy every few minutes (Settings) when something changed ---------------------------
 const backupsDir = () => path.join(root, 'backups');
 let lastBackup = null;
 
 function backupNow(force) {
-  if (!fs.existsSync(projectFile())) return;
+  if (guestMode || !fs.existsSync(projectFile())) return;
   const text = fs.readFileSync(projectFile(), 'utf8');
   if (lastBackup === null) {
     const newest = fs.readdirSync(backupsDir()).filter((n) => n.startsWith('project-')).sort().pop();
@@ -67,7 +84,7 @@ function backupNow(force) {
   if (!force && text === lastBackup) return;
   fs.writeFileSync(path.join(backupsDir(), core.backupName(new Date())), text);
   lastBackup = text;
-  for (const name of core.backupsToPrune(fs.readdirSync(backupsDir()), Date.now())) fs.rmSync(path.join(backupsDir(), name), { force: true });
+  for (const name of core.backupsToPrune(fs.readdirSync(backupsDir()), Date.now(), cfg.keepDays)) fs.rmSync(path.join(backupsDir(), name), { force: true });
 }
 
 function listBackups() {
@@ -96,8 +113,9 @@ async function restoreBackup(name) {
 }
 
 function copyIntoLibrary(src) {
-  const dest = core.uniquePath(libDir(), core.safeName(path.basename(src)));
+  const dest = freshPath(libDir(), core.safeName(path.basename(src)));
   fs.copyFileSync(src, dest);
+  noteWrite(dest);
   return { file: `library/${path.basename(dest)}`, title: path.parse(dest).name, source: 'Imported' };
 }
 
@@ -120,7 +138,7 @@ function setupSoundBrowser() {
       send('dl:update', { id, name: item.getFilename(), state: 'blocked' });
       return;
     }
-    const dest = core.uniquePath(libDir(), name);
+    const dest = freshPath(libDir(), name);
     item.setSavePath(dest);
     const pageUrl = wc && !wc.isDestroyed() ? wc.getURL() : item.getURL();
     item.on('updated', () => {
@@ -130,6 +148,7 @@ function setupSoundBrowser() {
     item.once('done', (_e, state) => {
       if (state !== 'completed') return send('dl:update', { id, name, state: 'failed' });
       send('dl:update', { id, name, state: 'done' });
+      noteWrite(dest);
       send('dl:done', { file: `library/${path.basename(dest)}`, title: path.parse(dest).name, source: new URL(pageUrl).hostname.replace(/^www\./, ''), sourceUrl: pageUrl });
     });
   });
@@ -168,8 +187,9 @@ async function searchSource(src, query, token) {
 
 function startSearch(query) {
   const token = ++searchToken;
-  const queue = [...SOURCES];
-  let left = SOURCES.length;
+  const active = SOURCES.filter((s) => !cfg.disabledSources.includes(s.name));
+  const queue = [...active];
+  let left = active.length;
   const worker = async () => {
     while (queue.length && token === searchToken) {
       const src = queue.shift();
@@ -179,7 +199,7 @@ function startSearch(query) {
     }
   };
   for (let i = 0; i < 5; i++) worker();
-  return { token, total: SOURCES.length };
+  return { token, total: active.length };
 }
 
 async function addResult({ audio, title, artist, license, page, source }) {
@@ -188,8 +208,9 @@ async function addResult({ audio, title, artist, license, page, source }) {
   if (!res.ok) throw new Error(`${source} refused the download (${res.status})`);
   const name = core.resultFileName(title, res.url || audio, res.headers.get('content-type'));
   if (!name) throw new Error('That link is not an audio file.');
-  const dest = core.uniquePath(libDir(), name);
+  const dest = freshPath(libDir(), name);
   fs.writeFileSync(dest, Buffer.from(await res.arrayBuffer()));
+  noteWrite(dest);
   return { file: `library/${path.basename(dest)}`, title, artist, license, source, sourceUrl: page || audio };
 }
 
@@ -226,6 +247,7 @@ function grabWithYtdlp(url) {
         finished = true;
         const { file, title, artist, duration } = parsed.done;
         send('dl:update', { id, name: title, state: 'done' });
+        noteWrite(file);
         send('dl:done', { file: `library/${path.basename(file)}`, title, artist, duration, source: new URL(url).hostname.replace(/^www\./, ''), sourceUrl: url, license: 'Unknown: check before using' });
       }
     }
@@ -244,7 +266,7 @@ function setupUpdates() {
   autoUpdater.on('update-available', () => { busy = true; });
   autoUpdater.on('update-downloaded', (info) => send('update:ready', info.version));
   autoUpdater.on('error', () => { busy = false; }); // offline or GitHub hiccup: try again next minute
-  const check = () => { if (!busy) autoUpdater.checkForUpdates().catch(() => {}); };
+  const check = () => { if (!busy && cfg.autoUpdate) autoUpdater.checkForUpdates().catch(() => {}); };
   check();
   setInterval(check, 60 * 1000);
 }
@@ -267,14 +289,16 @@ const handlers = {
     const { canceled, filePaths } = await dialog.showOpenDialog(win, { filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'] }], properties: ['openFile'] });
     if (canceled) return null;
     if (asDataUrl) return `data:image/${path.extname(filePaths[0]).slice(1).replace('jpg', 'jpeg')};base64,${fs.readFileSync(filePaths[0]).toString('base64')}`;
-    const dest = core.uniquePath(path.join(root, 'images'), core.safeName(path.basename(filePaths[0])));
+    const dest = freshPath(path.join(root, 'images'), core.safeName(path.basename(filePaths[0])));
     fs.copyFileSync(filePaths[0], dest);
+    noteWrite(dest);
     return `images/${path.basename(dest)}`;
   },
   'image:write': (_e, rel, dataUrl) => {
     const match = /^data:image\/png;base64,(.+)$/.exec(dataUrl);
     if (!match) throw new Error('Expected a PNG image');
     fs.writeFileSync(core.inside(root, rel), Buffer.from(match[1], 'base64'));
+    noteWrite(core.inside(root, rel));
   },
   'image:read': (_e, rel) => `data:image/png;base64,${fs.readFileSync(core.inside(root, rel)).toString('base64')}`,
   'lib:pick': async (_e, folders) => {
@@ -306,13 +330,56 @@ const handlers = {
     return streamUrl(url);
   },
   'update:install': () => autoUpdater.quitAndInstall(),
+  'settings:main': (_e, next) => {
+    const every = cfg.backupEvery;
+    Object.assign(cfg, next);
+    session.defaultSession.setSpellCheckerEnabled(next.spellcheck !== false);
+    if (every !== cfg.backupEvery) restartBackups();
+  },
+  'app:version': () => app.getVersion(),
+  'app:openFolder': (_e, which) => shell.openPath(which === 'backups' ? backupsDir() : root),
+  'update:check': async () => {
+    if (!app.isPackaged) return 'Updates only work in the installed app.';
+    const result = await autoUpdater.checkForUpdates().catch(() => null);
+    const latest = result?.updateInfo?.version;
+    if (!latest) return 'Could not reach GitHub. Check your internet.';
+    return latest === app.getVersion() ? `You have the latest version (${latest}).` : `Version ${latest} is downloading. You will be asked to restart.`;
+  },
+  'find:sources': () => SOURCES.map((s) => s.name),
+  // Writing together: images and sounds pass between PCs. Only the show's own folders.
+  'file:read': (_e, rel) => {
+    if (!/^(images|library)\//.test(rel)) return null;
+    const full = core.inside(root, rel);
+    return fs.existsSync(full) ? fs.readFileSync(full) : null;
+  },
+  'file:write': (_e, rel, data) => {
+    if (!/^(images|library)\/[^/]+$/.test(rel) || !data) return false;
+    const full = core.inside(root, rel);
+    // Never replace an existing file, except redrawn storyboard panels.
+    const flag = /^images\/panel-[\w-]+\.png$/.test(rel) ? 'w' : 'wx';
+    try { fs.writeFileSync(full, Buffer.from(data), { flag }); } catch (err) { if (err.code !== 'EEXIST') throw err; }
+    return true;
+  },
+  'collab:guestRoot': () => {
+    root = path.join(app.getPath('userData'), 'shared-session');
+    fs.rmSync(root, { recursive: true, force: true });
+    for (const d of ['images', 'library', 'backups']) fs.mkdirSync(path.join(root, d), { recursive: true });
+    guestMode = true;
+    return { rootUrl: `${pathToFileURL(root).href}/` };
+  },
+  'collab:leave': () => {
+    guestMode = false;
+    root = startingRoot();
+    win.reload();
+  },
   'words:known': (_e, list) => list.map((w) => commonWords().has(String(w).toLowerCase())),
   'backup:list': () => listBackups(),
   'backup:now': () => backupNow(true),
   'backup:restore': (_e, name) => restoreBackup(name),
   'lib:saveAudio': (_e, title, bytes) => {
-    const dest = core.uniquePath(libDir(), `${core.safeName(title).slice(0, 120)}.wav`);
+    const dest = freshPath(libDir(), `${core.safeName(title).slice(0, 120)}.wav`);
     fs.writeFileSync(dest, Buffer.from(bytes));
+    noteWrite(dest);
     return { file: `library/${path.basename(dest)}`, title };
   },
   'grammar:check': async (_e, text) => {
@@ -348,6 +415,7 @@ const handlers = {
 app.whenReady().then(() => {
   for (const [channel, fn] of Object.entries(handlers)) ipcMain.handle(channel, fn);
   ipcMain.on('project:save', (e, text) => {
+    if (guestMode) { e.returnValue = 'Visiting a shared show: nothing is saved on this PC.'; return; }
     try { saveProject(text); e.returnValue = null; } catch (err) { e.returnValue = err.message; }
   });
 
@@ -358,7 +426,7 @@ app.whenReady().then(() => {
   // Microphone only (for Recording); never camera or anything else.
   session.defaultSession.setPermissionRequestHandler((_wc, permission, cb, details) => cb(permission === 'fullscreen' || (permission === 'media' && (details.mediaTypes || []).every((t) => t === 'audio'))));
   session.defaultSession.setPermissionCheckHandler((_wc, permission) => ['local-fonts', 'fullscreen', 'media'].includes(permission));
-  setInterval(() => { try { backupNow(false); } catch { /* disk busy: next round */ } }, 2 * 60 * 1000);
+  restartBackups();
 
   win = new BrowserWindow({
     width: 1500, height: 920, minWidth: 1050, minHeight: 640, backgroundColor: '#17181c', title: 'Storyroom',
