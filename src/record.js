@@ -2,7 +2,7 @@
 // Raw mic recording: echo cancellation, noise suppression and auto gain are all off, and takes
 // are kept as uncompressed 24-bit WAV.
 const WORKLET_URL = new URL('rec-worklet.js', document.currentScript.src).href;
-const rec = { takes: [], device: '', live: null, count: 0 };
+const rec = { takes: [], live: null, count: 0 }; // microphone choice lives in settings.micDevice
 
 function encodeWav(channels, sampleRate, bits = 24) {
   const bytes = bits / 8;
@@ -30,7 +30,7 @@ function encodeWav(channels, sampleRate, bits = 24) {
 
 async function startRecording(onLevel) {
   const stream = await navigator.mediaDevices.getUserMedia({ audio: {
-    deviceId: rec.device ? { exact: rec.device } : undefined,
+    deviceId: settings.micDevice ? { exact: settings.micDevice } : undefined,
     echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: { ideal: 2 },
   } });
   const settings = stream.getAudioTracks()[0].getSettings();
@@ -96,7 +96,7 @@ VIEW.record = (root) => {
 
   async function drawDevices() {
     const inputs = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'audioinput');
-    devices.replaceChildren(select([['', 'Default microphone'], ...inputs.filter((d) => d.deviceId && d.deviceId !== 'default').map((d) => [d.deviceId, d.label || 'Microphone'])], rec.device, (v) => { rec.device = v; }, { 'aria-label': 'Microphone' }));
+    devices.replaceChildren(select([['', 'Default microphone'], ...inputs.filter((d) => d.deviceId && d.deviceId !== 'default').map((d) => [d.deviceId, d.label || 'Microphone'])], settings.micDevice, (v) => setSetting('micDevice', v), { 'aria-label': 'Microphone' }));
   }
 
   function tick() {

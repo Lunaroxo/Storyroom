@@ -435,3 +435,6 @@ body.no-wordcount .pane-foot { display: none; }
 #main.ro :disabled { opacity: .5; cursor: not-allowed; }
 #main.ro::after { content: 'View only'; position: absolute; top: 12px; right: 18px; background: var(--panel2); color: var(--muted); border: 1px solid var(--line); border-radius: 10px; padding: 3px 10px; font: 600 12px 'Segoe UI', sans-serif; pointer-events: none; z-index: 3; }
 
+
+.device-sel { max-width: 300px; }
+

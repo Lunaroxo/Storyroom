@@ -5,7 +5,7 @@ const SETTINGS_DEFAULTS = {
   paper: 'cream', docFont: '', docSize: '12', pageWidth: 'normal', spellcheck: true, proofMode: 'off', refs: true, wordCount: true,
   backupEvery: '2', backupKeepDays: '2',
   addFolder: '', disabledSources: [],
-  recFolder: 'Voice Takes', recBits: '24',
+  recFolder: 'Voice Takes', recBits: '24', micDevice: '', outputDevice: '',
   autoUpdate: true,
   myName: '', askJoin: true, guestDefault: 'view',
 };
@@ -50,7 +50,52 @@ function applySettings() {
   root.setProperty('--doc-size', `${settings.docSize}pt`);
   api.setZoom(+settings.zoom || 1);
   document.querySelectorAll('.rte').forEach((e) => { e.spellcheck = settings.spellcheck; });
+  applyOutput();
   api['settings:main']({ backupEvery: +settings.backupEvery, keepDays: +settings.backupKeepDays, autoUpdate: settings.autoUpdate, disabledSources: settings.disabledSources, spellcheck: settings.spellcheck });
+}
+
+// Sends all app sound to the chosen speakers or headphones. An unplugged device falls back to the default.
+let outputWarned = false;
+function applyOutput() {
+  if (!audio.setSinkId) return;
+  audio.setSinkId(settings.outputDevice || '').catch(() => {
+    audio.setSinkId('').catch(() => {});
+    if (!outputWarned) toast('Your chosen speakers are not connected, so the default ones are used.', true);
+    outputWarned = true;
+  });
+}
+
+// Device names stay blank until the microphone has been allowed once, so ask briefly if needed.
+async function audioDevices() {
+  let list = await navigator.mediaDevices.enumerateDevices();
+  if (list.some((d) => d.kind.startsWith('audio') && !d.label)) {
+    try {
+      const s = await navigator.mediaDevices.getUserMedia({ audio: true });
+      s.getTracks().forEach((t) => t.stop());
+      list = await navigator.mediaDevices.enumerateDevices();
+    } catch { /* names stay generic */ }
+  }
+  const pick = (kind, fallback) => list.filter((d) => d.kind === kind && d.deviceId && !['default', 'communications'].includes(d.deviceId))
+    .map((d, i) => [d.deviceId, d.label || `${fallback} ${i + 1}`]);
+  return { inputs: pick('audioinput', 'Microphone'), outputs: pick('audiooutput', 'Speakers') };
+}
+
+async function playTestSound() {
+  const ctx = new AudioContext();
+  try { if (settings.outputDevice) await ctx.setSinkId(settings.outputDevice); } catch { /* default output */ }
+  const gain = ctx.createGain();
+  gain.connect(ctx.destination);
+  [523.25, 659.25, 783.99].forEach((f, i) => { // a soft three-note chime
+    const osc = ctx.createOscillator();
+    osc.frequency.value = f;
+    osc.connect(gain);
+    osc.start(ctx.currentTime + i * 0.18);
+    osc.stop(ctx.currentTime + i * 0.18 + 0.35);
+  });
+  gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.25 * audio.volume + 0.05, ctx.currentTime + 0.05);
+  gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.9);
+  setTimeout(() => ctx.close(), 1200);
 }
 
 const THEMES = [
@@ -109,6 +154,8 @@ VIEW.settings = (root) => {
       sourceList,
     ],
     Recording: () => [
+      row('Speakers / headphones', 'Where all sound from Storyroom plays: library, previews and takes.', h('div', { class: 'row' }, outputSlot, btn('Play test sound', playTestSound))),
+      row('Microphone', 'Used by the Recording tab.', micSlot),
       row('Save takes to', 'Default library folder for new takes.', h('input', { value: settings.recFolder, 'aria-label': 'Default take folder', onchange: (e) => setSetting('recFolder', e.target.value.trim() || 'Voice Takes') })),
       row('Bit depth', '24-bit keeps the most detail. 16-bit files are smaller.', sel('recBits', [['24', '24-bit'], ['16', '16-bit']])),
     ],
@@ -131,6 +178,14 @@ VIEW.settings = (root) => {
     ],
   };
 
+  const outputSlot = h('span', { class: 'muted' }, 'Finding devices...');
+  const micSlot = h('span', { class: 'muted' }, 'Finding devices...');
+  if (ui.settingsTab === 'Recording') {
+    audioDevices().then(({ inputs, outputs }) => {
+      outputSlot.replaceWith(select([['', 'System default'], ...outputs], settings.outputDevice, (v) => { outputWarned = false; setSetting('outputDevice', v); }, { 'aria-label': 'Speakers or headphones', class: 'device-sel' }));
+      micSlot.replaceWith(select([['', 'System default'], ...inputs], settings.micDevice, (v) => setSetting('micDevice', v), { 'aria-label': 'Microphone', class: 'device-sel' }));
+    });
+  }
   const versionRow = row('Version', null, h('span', { class: 'muted' }, '...'));
   api['app:version']().then((v) => { versionRow.lastChild.textContent = `Storyroom ${v}`; });
   const sourceList = h('div', { class: 'source-list' });

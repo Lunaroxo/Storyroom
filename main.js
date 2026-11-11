@@ -424,8 +424,8 @@ app.whenReady().then(() => {
   setupSearchSession();
   Menu.setApplicationMenu(null);
   // Microphone only (for Recording); never camera or anything else.
-  session.defaultSession.setPermissionRequestHandler((_wc, permission, cb, details) => cb(permission === 'fullscreen' || (permission === 'media' && (details.mediaTypes || []).every((t) => t === 'audio'))));
-  session.defaultSession.setPermissionCheckHandler((_wc, permission) => ['local-fonts', 'fullscreen', 'media'].includes(permission));
+  session.defaultSession.setPermissionRequestHandler((_wc, permission, cb, details) => cb(permission === 'fullscreen' || permission === 'speaker-selection' || (permission === 'media' && (details.mediaTypes || []).every((t) => t === 'audio'))));
+  session.defaultSession.setPermissionCheckHandler((_wc, permission) => ['local-fonts', 'fullscreen', 'media', 'speaker-selection'].includes(permission));
   restartBackups();
 
   win = new BrowserWindow({
