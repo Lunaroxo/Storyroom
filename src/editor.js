@@ -169,6 +169,19 @@ function makeToolbar(getEd) {
   const blockSel = (label, options, apply) => select([['', label], ...options], '', (v) => { if (v) { selectedBlocks().forEach((b) => apply(b, v)); changed(); bar.querySelectorAll('select.reset').forEach((s) => { s.value = ''; }); } }, { class: 'tb-select reset', title: label, 'aria-label': label });
   const charSel = select([['', 'Insert name'], ...S.pages.filter((p) => p.kind === 'character').map((p) => [p.name, p.name])], '', (v) => { if (v) { exec('insertText', v); charSel.value = ''; } }, { class: 'tb-select', title: 'Insert a character name', 'aria-label': 'Insert a character name' });
 
+  const linkSel = select([['', 'Link to page'], ...S.pages.map((p) => [p.id, p.name]), ['-', 'Remove link']], '', (v) => {
+    if (v === '-') exec('unlink');
+    else if (v) linkSelectionTo(v);
+    linkSel.value = '';
+  }, { class: 'tb-select', title: 'Link the selected words to a character or world page (Ctrl+click opens it)', 'aria-label': 'Link to page' });
+  const proofSel = select([['off', 'Proofread: off'], ['local', 'Proofread: spelling + spacing'], ['grammar', 'Proofread: + grammar']], proofMode(), async (v) => {
+    if (v === 'grammar' && proofMode() !== 'grammar') {
+      const ok = await dialogBox({ title: 'Use online grammar checking?', text: 'Grammar checks send the text you are proofreading to LanguageTool (languagetool.org). Spelling and spacing fixes stay on this PC.', okText: 'Use LanguageTool' });
+      if (!ok) { proofSel.value = proofMode(); return; }
+    }
+    setProofMode(v);
+  }, { class: 'tb-select proof-sel', title: 'Wavy blue lines mark fixes. Right-click one to fix it.', 'aria-label': 'Proofread' });
+
   const findIn = h('input', { placeholder: 'Find', 'aria-label': 'Find' });
   const replIn = h('input', { placeholder: 'Replace with', 'aria-label': 'Replace with' });
   const findRow = h('div', { class: 'toolbar find-row off' }, findIn, replIn,
@@ -188,7 +201,7 @@ function makeToolbar(getEd) {
     blockSel('Paragraph gap', [['0', 'None'], ['.5em', 'Small'], ['1em', 'Medium'], ['2em', 'Large']], (b, v) => { b.style.marginBottom = v; }),
     select([['', 'Letter spacing'], ['-.5px', 'Tight'], ['normal', 'Normal'], ['1px', 'Wide'], ['3px', 'Wider'], ['6px', 'Widest']], '', (v) => { if (v) setLetterSpacing(v); }, { class: 'tb-select', title: 'Letter spacing', 'aria-label': 'Letter spacing' }),
     select([['', 'Change case'], ['upper', 'UPPERCASE'], ['lower', 'lowercase'], ['title', 'Title Case']], '', (v) => { if (v) changeCase(v); }, { class: 'tb-select', title: 'Change case', 'aria-label': 'Change case' }), sep(),
-    charSel,
+    charSel, linkSel, proofSel,
     tool('Image', 'Insert image', async () => { const rel = await api['image:pick'](); if (rel) exec('insertImage', url(rel)); }, 'text'),
     tool('Table', 'Insert table', () => exec('insertHTML', `<table>${'<tr><td><br></td><td><br></td><td><br></td></tr>'.repeat(3)}</table><p><br></p>`), 'text'),
     tool('Line', 'Insert divider', () => exec('insertHorizontalRule'), 'text'),
@@ -243,7 +256,9 @@ function makeEditor(obj, key, { onInput, placeholder, tall } = {}) {
     ed.classList.toggle('empty', !ed.textContent.trim() && !ed.querySelector('img,table,hr'));
     touch();
     onInput?.(ed);
+    proofSoon(ed);
   });
+  setTimeout(() => proofread(ed), 300);
   ed.classList.toggle('empty', !ed.textContent.trim() && !ed.querySelector('img,table,hr'));
 
   ed.addEventListener('keydown', (e) => {

@@ -1,6 +1,6 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
-const channels = ['project:load', 'project:switch', 'project:open', 'image:pick', 'image:write', 'image:read', 'lib:pick', 'lib:import', 'lib:trash', 'lib:reveal', 'web:external', 'yt:ready', 'yt:install', 'yt:grab', 'yt:stream', 'find:search', 'find:add', 'update:install', 'pdf:export'];
+const channels = ['project:load', 'project:switch', 'project:open', 'image:pick', 'image:write', 'image:read', 'lib:pick', 'lib:import', 'lib:trash', 'lib:reveal', 'web:external', 'yt:ready', 'yt:install', 'yt:grab', 'yt:stream', 'find:search', 'find:add', 'update:install', 'pdf:export', 'lib:saveAudio', 'grammar:check', 'backup:list', 'backup:restore', 'backup:now', 'words:known'];
 const api = Object.fromEntries(channels.map((c) => [c, (...args) => ipcRenderer.invoke(c, ...args)]));
 
 contextBridge.exposeInMainWorld('api', {

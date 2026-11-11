@@ -75,4 +75,24 @@ function parseYtdlp(line) {
   return null;
 }
 
-module.exports = { resultFileName, cleanResults, isAudio, audioName, safeName, uniquePath, atomicWrite, inside, isWebUrl, parseYtdlp };
+// Backup file name for a moment in local time: project-2026-11-10_14-02-00.json
+const backupName = (d) => `project-${[d.getFullYear(), d.getMonth() + 1, d.getDate()].map((n) => String(n).padStart(2, '0')).join('-')}_${[d.getHours(), d.getMinutes(), d.getSeconds()].map((n) => String(n).padStart(2, '0')).join('-')}.json`;
+
+// Which backups to delete: everything from the last 2 days stays, older days keep their last one.
+function backupsToPrune(names, now) {
+  const recent = now - 2 * 24 * 3600 * 1000;
+  const keepPerDay = new Map();
+  const doomed = [];
+  for (const name of [...names].sort()) {
+    const m = /^project-(\d{4})-(\d\d)-(\d\d)(?:_(\d\d)-(\d\d)-(\d\d))?\.json$/.exec(name);
+    if (!m) continue;
+    const t = new Date(+m[1], m[2] - 1, +m[3], +(m[4] || 23), +(m[5] || 59), +(m[6] || 59)).getTime();
+    if (t >= recent) continue;
+    const day = name.slice(8, 18);
+    if (keepPerDay.has(day)) doomed.push(keepPerDay.get(day));
+    keepPerDay.set(day, name);
+  }
+  return doomed;
+}
+
+module.exports = { backupName, backupsToPrune, resultFileName, cleanResults, isAudio, audioName, safeName, uniquePath, atomicWrite, inside, isWebUrl, parseYtdlp };

@@ -126,7 +126,8 @@ const SECTIONS = [
   ['world', 'World', '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3.5 15 0 18M12 3c-3 3-3.5 15 0 18"/>'],
   ['storyboard', 'Storyboard', '<rect x="3" y="4" width="8" height="7" rx="1"/><rect x="13" y="4" width="8" height="7" rx="1"/><rect x="3" y="13" width="8" height="7" rx="1"/><rect x="13" y="13" width="8" height="7" rx="1"/>'],
   ['library', 'Library', '<path d="M9 18V5l11-2v13"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="17.5" cy="16" r="2.5"/>'],
-  ['find', 'Find Sounds', '<circle cx="11" cy="11" r="7"/><path d="M21 21l-5-5"/>'],
+  ['record', 'Recording', '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/>'],
+  ['find', 'Find Sounds','<circle cx="11" cy="11" r="7"/><path d="M21 21l-5-5"/>'],
   ['todo', 'To Do', '<rect x="4" y="4" width="16" height="16" rx="3"/><path d="M8.5 12.5l2.5 2.5 4.5-5.5"/>'],
   ['production', 'Production','<rect x="3" y="4" width="5" height="16" rx="1"/><rect x="10" y="4" width="5" height="10" rx="1"/><rect x="17" y="4" width="4" height="13" rx="1"/>'],
 ];
@@ -157,6 +158,46 @@ function go(id) {
   setTimeout(() => host.classList.remove('view-in'), 800);
 }
 
+// --- Backups -----------------------------------------------------------------------------------
+async function openBackups() {
+  saveNow();
+  const restore = async (name, label) => {
+    const ok = await dialogBox({ title: `Go back to ${label}?`, text: 'Your show returns to how it was then. Right now gets backed up first, so you can come back to it.', okText: 'Restore' });
+    if (!ok) return;
+    switching = true;
+    try {
+      if (!(await api['backup:restore'](name))) switching = false;
+    } catch (err) {
+      switching = false;
+      throw err;
+    }
+  };
+  const when = (name) => {
+    const m = /^project-(\d{4})-(\d\d)-(\d\d)(?:_(\d\d)-(\d\d)-(\d\d))?/.exec(name);
+    const d = new Date(+m[1], m[2] - 1, +m[3], +(m[4] || 0), +(m[5] || 0), +(m[6] || 0));
+    return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' }) + (m[4] ? `, ${d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', second: '2-digit' })}` : ' (daily)');
+  };
+  const list = h('div', { class: 'backup-list' });
+  const draw = async () => {
+    const backups = await api['backup:list']();
+    list.replaceChildren(...(backups.length ? backups.map((b) => h('div', { class: 'backup-row' },
+      h('span', { class: 'grow' }, when(b.name)), h('span', { class: 'muted' }, `${Math.max(1, Math.round(b.size / 1024))} KB`),
+      btn('Restore', () => restore(b.name, when(b.name)))))
+      : [h('p', { class: 'muted' }, 'No backups yet. One is made every 2 minutes while things change.')]));
+  };
+  const overlay = h('div', { class: 'overlay', role: 'dialog', 'aria-modal': 'true', onkeydown: (e) => { if (e.key === 'Escape') overlay.remove(); } },
+    h('div', { class: 'dialog wide-dialog' },
+      h('div', { class: 'row between' }, h('h3', {}, 'Backups'), h('button', { class: 'x show', type: 'button', title: 'Close', onclick: () => overlay.remove() }, '×')),
+      h('p', {}, 'Saved every 2 minutes while you work. Everything from the last 2 days is kept, then one per day. Covers your writing, pages, boards and lists. Images and sound files stay in their folders.'),
+      list,
+      h('div', { class: 'row end' },
+        btn('Import backup file...', () => restore(null, 'an imported backup')),
+        btn('Back up now', async () => { await api['backup:now'](); toast('Backed up'); draw(); }, 'primary'))));
+  document.body.append(overlay);
+  await draw();
+  $('.btn', overlay)?.focus();
+}
+
 // --- Show overview ------------------------------------------------------------------------------
 VIEW.show = (root) => {
   const s = S.show;
@@ -174,7 +215,7 @@ VIEW.show = (root) => {
   root.append(h('div', { class: 'scroll' }, h('div', { class: 'column' },
     h('div', { class: 'row between' },
       h('p', { class: 'eyebrow' }, 'Series overview'),
-      h('div', { class: 'row' }, btn('New show...', () => switchShow(true)), btn('Open show...', () => switchShow(false)))),
+      h('div', { class: 'row' }, btn('Backups', openBackups), btn('New show...', () => switchShow(true)), btn('Open show...', () => switchShow(false)))),
     bind(s, 'title', { class: 'title-input', placeholder: 'Show title', 'aria-label': 'Show title' }),
     bind(s, 'logline', { class: 'wide logline', placeholder: 'One-sentence logline', rows: 2, 'aria-label': 'Logline' }, 'textarea'),
     h('div', { class: 'stats' }, stats.map(([k, v]) => h('div', { class: 'stat' }, h('b', {}, String(v)), h('span', {}, k)))),

@@ -27,6 +27,14 @@ test('cleanResults drops bad rows and non-web links', () => {
   assert.deepEqual(core.cleanResults('nope', { name: 'S' }), []);
 });
 
+test('backupsToPrune keeps 2 days of backups, then the last one per day', () => {
+  const now = new Date(2026, 10, 10, 12, 0, 0).getTime();
+  const names = ['project-2026-11-01.json', 'project-2026-11-05_09-00-00.json', 'project-2026-11-05_18-30-00.json', 'project-2026-11-05_10-00-00.json',
+    'project-2026-11-09_08-00-00.json', 'project-2026-11-10_11-58-00.json', 'other.json'];
+  assert.deepEqual(core.backupsToPrune(names, now).sort(), ['project-2026-11-05_09-00-00.json', 'project-2026-11-05_10-00-00.json']);
+  assert.equal(core.backupName(new Date(2026, 0, 2, 3, 4, 5)), 'project-2026-01-02_03-04-05.json');
+});
+
 test('safeName strips directories and illegal characters', () => {
   assert.equal(core.safeName('..\\..\\evil.mp3'), 'evil.mp3');
   assert.equal(core.safeName('a:b?.wav'), 'a_b_.wav');

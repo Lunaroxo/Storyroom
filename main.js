@@ -46,9 +46,53 @@ function loadProject() {
 
 function saveProject(text) {
   JSON.parse(text); // never replace a good file with invalid JSON
-  const backup = path.join(root, 'backups', `project-${new Date().toISOString().slice(0, 10)}.json`);
-  if (!fs.existsSync(backup) && fs.existsSync(projectFile())) fs.copyFileSync(projectFile(), backup);
   core.atomicWrite(projectFile(), text);
+}
+
+// About 60,000 common English words (SCOWL sizes 10-50), loaded on first use for spacing fixes.
+let words = null;
+const commonWords = () => (words ||= new Set(['10', '20', '35', '40', '50'].flatMap((n) => require('wordlist-english')[`english/${n}`]).map((w) => w.toLowerCase())));
+
+// --- Backups: a silent copy every 2 minutes when something changed ---------------------------
+const backupsDir = () => path.join(root, 'backups');
+let lastBackup = null;
+
+function backupNow(force) {
+  if (!fs.existsSync(projectFile())) return;
+  const text = fs.readFileSync(projectFile(), 'utf8');
+  if (lastBackup === null) {
+    const newest = fs.readdirSync(backupsDir()).filter((n) => n.startsWith('project-')).sort().pop();
+    lastBackup = newest ? fs.readFileSync(path.join(backupsDir(), newest), 'utf8') : '';
+  }
+  if (!force && text === lastBackup) return;
+  fs.writeFileSync(path.join(backupsDir(), core.backupName(new Date())), text);
+  lastBackup = text;
+  for (const name of core.backupsToPrune(fs.readdirSync(backupsDir()), Date.now())) fs.rmSync(path.join(backupsDir(), name), { force: true });
+}
+
+function listBackups() {
+  return fs.readdirSync(backupsDir()).filter((n) => /^project-[\d_-]+\.json$/.test(n)).sort().reverse()
+    .map((name) => ({ name, size: fs.statSync(path.join(backupsDir(), name)).size }));
+}
+
+// Restores a backup (by name) or an imported file. The current state is backed up first.
+async function restoreBackup(name) {
+  let source;
+  if (name) {
+    if (!/^project-[\d_-]+\.json$/.test(name)) throw new Error('Unknown backup.');
+    source = core.inside(root, `backups/${name}`);
+  } else {
+    const { canceled, filePaths } = await dialog.showOpenDialog(win, { title: 'Import a Storyroom backup', filters: [{ name: 'Storyroom backup', extensions: ['json'] }], properties: ['openFile'] });
+    if (canceled) return false;
+    source = filePaths[0];
+  }
+  const text = fs.readFileSync(source, 'utf8');
+  const data = JSON.parse(text);
+  if (!data?.show || !Array.isArray(data.episodes)) throw new Error('That file is not a Storyroom backup.');
+  backupNow(true);
+  core.atomicWrite(projectFile(), text);
+  win.reload();
+  return true;
 }
 
 function copyIntoLibrary(src) {
@@ -262,6 +306,25 @@ const handlers = {
     return streamUrl(url);
   },
   'update:install': () => autoUpdater.quitAndInstall(),
+  'words:known': (_e, list) => list.map((w) => commonWords().has(String(w).toLowerCase())),
+  'backup:list': () => listBackups(),
+  'backup:now': () => backupNow(true),
+  'backup:restore': (_e, name) => restoreBackup(name),
+  'lib:saveAudio': (_e, title, bytes) => {
+    const dest = core.uniquePath(libDir(), `${core.safeName(title).slice(0, 120)}.wav`);
+    fs.writeFileSync(dest, Buffer.from(bytes));
+    return { file: `library/${path.basename(dest)}`, title };
+  },
+  'grammar:check': async (_e, text) => {
+    const res = await net.fetch('https://api.languagetool.org/v2/check', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ text: String(text).slice(0, 20000), language: 'en-US' }).toString(),
+    });
+    if (res.status === 429) throw new Error('Grammar service is busy. It will try again after your next pause.');
+    if (!res.ok) throw new Error(`Grammar service error (${res.status}).`);
+    return (await res.json()).matches.map((m) => ({ offset: m.offset, length: m.length, message: m.message, replacements: m.replacements.slice(0, 6).map((r) => r.value) }));
+  },
   'pdf:export': async (_e, html, name) => {
     const { canceled, filePath } = await dialog.showSaveDialog(win, { defaultPath: `${core.safeName(name)}.pdf`, filters: [{ name: 'PDF', extensions: ['pdf'] }] });
     if (canceled) return null;
@@ -292,8 +355,10 @@ app.whenReady().then(() => {
   setupSoundBrowser();
   setupSearchSession();
   Menu.setApplicationMenu(null);
-  session.defaultSession.setPermissionRequestHandler((_wc, permission, cb) => cb(permission === 'fullscreen'));
-  session.defaultSession.setPermissionCheckHandler((_wc, permission) => ['local-fonts', 'fullscreen'].includes(permission));
+  // Microphone only (for Recording); never camera or anything else.
+  session.defaultSession.setPermissionRequestHandler((_wc, permission, cb, details) => cb(permission === 'fullscreen' || (permission === 'media' && (details.mediaTypes || []).every((t) => t === 'audio'))));
+  session.defaultSession.setPermissionCheckHandler((_wc, permission) => ['local-fonts', 'fullscreen', 'media'].includes(permission));
+  setInterval(() => { try { backupNow(false); } catch { /* disk busy: next round */ } }, 2 * 60 * 1000);
 
   win = new BrowserWindow({
     width: 1500, height: 920, minWidth: 1050, minHeight: 640, backgroundColor: '#17181c', title: 'Storyroom',

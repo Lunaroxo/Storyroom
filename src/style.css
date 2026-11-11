@@ -331,3 +331,40 @@ textarea.wrap-box { field-sizing: content; resize: none; overflow: hidden; width
 .caret.hide { visibility: hidden; }
 .page-row .caret { flex: none; }
 
+
+/* --- Recording --- */
+.rec-deck { display: flex; align-items: center; gap: 22px; background: var(--glass); border: 1px solid var(--line); border-radius: 14px; padding: 18px 22px; margin: 16px 0 6px; }
+.rec-btn { width: 96px; height: 96px; border-radius: 50%; border: 3px solid #e5604d; background: #e5604d22; color: var(--text); font: 600 16px 'Segoe UI', sans-serif; cursor: pointer; flex: none; transition: background-color .2s, transform .12s; }
+.rec-btn:hover { background: #e5604d44; }
+.rec-btn.on { background: #e5604d; color: #fff; animation: pulse 1.4s ease-in-out infinite; }
+.rec-time { font: 600 34px 'Segoe UI', sans-serif; font-variant-numeric: tabular-nums; margin-bottom: 8px; }
+.rec-meter { height: 12px; background: #ffffff10; border-radius: 6px; overflow: hidden; }
+.rec-meter i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, #4fb3a5, #f0a94b 75%, #e5604d); transition: width .05s; }
+.rec-meter.clip { outline: 2px solid #e5604d; }
+.take-list { display: flex; flex-direction: column; gap: 6px; }
+.take-row { display: flex; align-items: center; gap: 10px; background: var(--glass); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; }
+.take-row.saved { border-color: #7fcf8f55; }
+.take-name { background: none; border-color: transparent; font-weight: 600; }
+.clip-tag { color: #ff8d7c; font-size: 12px; }
+.saved-tag { color: #7fcf8f; font-size: 13px; width: 52px; text-align: center; }
+@keyframes pulse { 50% { box-shadow: 0 0 0 10px #e5604d22; } }
+
+/* --- References and proofreading --- */
+::highlight(refs) { color: #2f7de1; text-decoration: underline; text-decoration-color: #2f7de1; }
+.rte a[href^="#ref:"] { color: inherit; text-decoration: underline dotted #2f7de180; }
+.ctrl-refs .rte a[href^="#ref:"] { color: #2f7de1; text-decoration: underline solid; }
+.over-ref .rte, .over-ref .rte * { cursor: pointer; }
+::highlight(proof) { text-decoration: underline wavy #3b82f6; text-decoration-thickness: 1.5px; text-underline-offset: 3px; }
+.proof-sel { max-width: 150px; }
+.proof-menu { position: fixed; z-index: 50; min-width: 200px; max-width: 280px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px; box-shadow: 0 6px 22px #000a; animation: pop .15s ease-out; }
+.proof-menu .proof-msg { font-size: 12px; color: var(--muted); padding: 4px 8px 6px; border-bottom: 1px solid var(--line); margin-bottom: 4px; }
+.proof-menu button { display: block; width: 100%; text-align: left; background: none; border: 0; color: var(--text); font: 600 14px 'Segoe UI', sans-serif; padding: 6px 8px; border-radius: 5px; cursor: pointer; }
+.proof-menu button:hover { background: #ffffff14; }
+.proof-menu button.ignore { font-weight: 400; color: var(--muted); }
+
+/* --- Backups --- */
+.wide-dialog { width: 560px; }
+.backup-list { max-height: 50vh; overflow-y: auto; border: 1px solid var(--line); border-radius: 8px; }
+.backup-row { display: flex; align-items: center; gap: 12px; padding: 6px 10px; border-bottom: 1px solid #ffffff0a; }
+.backup-row .btn { padding: 3px 10px; }
+.rail-btn { padding: 7px 2px; }
