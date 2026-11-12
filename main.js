@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, session, shell, Menu, net } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, session, shell, Menu, net, powerSaveBlocker } = require('electron');
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
@@ -228,13 +228,24 @@ function streamUrl(url) {
 // When two PCs cannot link directly, guests reach the host through a Cloudflare Quick Tunnel
 // (free, no account): a small WebSocket server on this PC, made reachable at a random
 // https://*.trycloudflare.com address. Both sides only make normal outgoing connections.
+// The same link also serves the phone page (see phoneRoute). It stays up while either uses it.
 const cfBin = () => path.join(app.getPath('userData'), 'bin', 'cloudflared.exe');
 let tunnel = null;
+let tunnelStarting = null;
+const tunnelUsers = new Set(); // 'collab' and/or 'phone'
 
-async function startTunnel() {
-  if (tunnel) return tunnel.url;
+async function startTunnel(user = 'collab') {
+  tunnelUsers.add(user);
+  if (tunnel?.url) return tunnel.url;
+  tunnelStarting ||= openTunnel().finally(() => { tunnelStarting = null; });
+  return tunnelStarting;
+}
+
+async function openTunnel() {
   const { WebSocketServer } = require('ws');
-  const server = require('http').createServer((_req, res) => res.end('Storyroom'));
+  const server = require('http').createServer((req, res) => {
+    phoneRoute(req, res).catch(() => { if (!res.headersSent) res.writeHead(500); res.end(); });
+  });
   const wss = new WebSocketServer({ server, maxPayload: 4 * 1024 * 1024 });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve)); // only the tunnel can reach it
   const clients = new Map();
@@ -260,21 +271,91 @@ async function startTunnel() {
       setTimeout(() => reject(new Error('The backup link did not start in time.')), 40000);
     });
   } catch (err) {
-    stopTunnel();
+    stopTunnel(null);
     throw err;
   }
   return tunnel.url;
 }
 
-function stopTunnel() {
-  if (!tunnel) return;
+// Stops one user's use of the link; it closes when nobody needs it (null closes it outright).
+function stopTunnel(user) {
+  if (user) tunnelUsers.delete(user); else tunnelUsers.clear();
+  if (user === 'phone') { phone.key = null; stopAwake(); }
+  if (tunnelUsers.size || !tunnel) return;
   tunnel.proc.kill();
   for (const ws of tunnel.clients.values()) ws.terminate();
   tunnel.wss.close();
   tunnel.server.close();
   tunnel = null;
 }
-app.on('before-quit', stopTunnel);
+app.on('before-quit', () => stopTunnel(null));
+
+// --- Phone page ------------------------------------------------------------------------------
+// A small website from this PC for recording on a phone: read the script, pick lines, record raw
+// takes and upload them into Voice Takes, and look through pages. The address holds a long random
+// key; without it every request gets "Not found".
+const phone = { key: null, awake: null };
+const stopAwake = () => { if (phone.awake !== null) powerSaveBlocker.stop(phone.awake); phone.awake = null; };
+const PHONE_FILES = { 'phone.js': 'phone/phone.js', 'phone.css': 'phone/phone.css', 'shared.js': 'shared.js', 'rec-worklet.js': 'rec-worklet.js' };
+const PHONE_TYPES = { '.js': 'text/javascript', '.css': 'text/css', '.html': 'text/html; charset=utf-8', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif' };
+
+async function phoneRoute(req, res) {
+  const { pathname, searchParams } = new URL(req.url, 'http://phone');
+  const m = /^\/m\/([A-Za-z0-9_-]{24,})(\/.*)?$/.exec(pathname);
+  if (!m || !phone.key || m[1] !== phone.key || guestMode) { res.writeHead(404); res.end('Not found'); return; }
+  const rest = m[2] || '';
+  const headers = { 'Cache-Control': 'no-store', 'Content-Security-Policy': "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'", 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' };
+  const sendFile = (full) => { res.writeHead(200, { ...headers, 'Content-Type': PHONE_TYPES[path.extname(full).toLowerCase()] || 'application/octet-stream' }); fs.createReadStream(full).pipe(res); };
+  if (rest === '') { res.writeHead(302, { Location: `${pathname}/` }); res.end(); return; }
+  if (rest === '/') return sendFile(path.join(__dirname, 'src', 'phone', 'index.html'));
+  const file = /^\/app\/([\w.-]+)$/.exec(rest);
+  if (file && PHONE_FILES[file[1]]) return sendFile(path.join(__dirname, 'src', PHONE_FILES[file[1]]));
+  if (rest === '/api/show' && req.method === 'GET') {
+    const data = loadProject() || { show: {}, episodes: [], pages: [], library: { items: [] } };
+    const body = JSON.stringify({
+      title: data.show?.title || 'Untitled Show',
+      episodes: data.episodes.map((e) => ({ id: e.id, title: e.title, parts: e.parts })),
+      pages: data.pages.map((p) => ({ id: p.id, name: p.name, kind: p.kind, parent: p.parent || '', fields: p.fields, html: p.html, image: p.image })),
+      taken: (data.library?.items || []).filter((i) => i.line).map((i) => i.line),
+    });
+    res.writeHead(200, { ...headers, 'Content-Type': 'application/json' });
+    res.end(body);
+    return;
+  }
+  const media = /^\/files\/(images\/[^/]+)$/.exec(rest);
+  if (media && req.method === 'GET') {
+    const full = core.inside(root, decodeURIComponent(media[1]));
+    if (!fs.existsSync(full)) { res.writeHead(404); res.end(); return; }
+    return sendFile(full);
+  }
+  if (rest === '/api/take' && req.method === 'POST') {
+    const chunks = [];
+    let size = 0;
+    for await (const chunk of req) {
+      size += chunk.length;
+      if (size > 300 * 1024 * 1024) { res.writeHead(413); res.end(); return; }
+      chunks.push(chunk);
+    }
+    const wav = Buffer.concat(chunks);
+    if (wav.length < 45 || wav.toString('latin1', 0, 4) !== 'RIFF' || wav.toString('latin1', 8, 12) !== 'WAVE') { res.writeHead(400); res.end('Not a WAV file'); return; }
+    const title = (searchParams.get('name') || 'Phone take').slice(0, 120);
+    const dest = freshPath(libDir(), `${core.safeName(title).slice(0, 120)}.wav`);
+    fs.writeFileSync(dest, wav);
+    send('phone:take', { file: `library/${path.basename(dest)}`, title, line: (searchParams.get('line') || '').slice(0, 100) });
+    res.writeHead(200, { ...headers, 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, title }));
+    return;
+  }
+  res.writeHead(404);
+  res.end('Not found');
+}
+
+async function startPhone() {
+  phone.key ||= require('crypto').randomBytes(24).toString('base64url');
+  const url = await startTunnel('phone');
+  if (phone.awake === null) phone.awake = powerSaveBlocker.start('prevent-app-suspension'); // keeps the PC from sleeping while the link is on
+  return `${url}/m/${phone.key}/`;
+}
 
 function grabWithYtdlp(url) {
   const id = `yt${Date.now()}`;
@@ -431,8 +512,12 @@ const handlers = {
     fs.mkdirSync(path.dirname(cfBin()), { recursive: true });
     core.atomicWrite(cfBin(), Buffer.from(await res.arrayBuffer()));
   },
-  'tunnel:start': () => startTunnel(),
-  'tunnel:stop': () => stopTunnel(),
+  'tunnel:start': () => startTunnel('collab'),
+  'tunnel:stop': () => stopTunnel('collab'),
+  'phone:start': () => startPhone(),
+  'phone:stop': () => stopTunnel('phone'),
+  // Local address of the phone page, for checking it on this PC without the internet.
+  'phone:local': () => (tunnel && phone.key ? `http://127.0.0.1:${tunnel.server.address().port}/m/${phone.key}/` : null),
   'tunnel:send': (_e, id, text) => { tunnel?.clients.get(id)?.send(String(text)); },
   'tunnel:kick': (_e, id) => { tunnel?.clients.get(id)?.close(); },
   'words:known': (_e, list) => list.map((w) => commonWords().has(String(w).toLowerCase())),

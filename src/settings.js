@@ -135,7 +135,7 @@ const THEMES = [
 
 VIEW.settings = (root) => {
   ui.settingsTab ||= 'Appearance';
-  const groups = ['Appearance', 'Writing', 'Saving & backups', 'Sounds & library', 'Recording', 'Collaboration', 'Updates', 'About'];
+  const groups = ['Appearance', 'Writing', 'Saving & backups', 'Sounds & library', 'Recording', 'Collaboration', 'Phone link', 'Updates', 'About'];
   const body = h('div', { class: 'set-body' });
   const nav = h('nav', { class: 'set-nav', 'aria-label': 'Settings sections' });
 
@@ -195,6 +195,7 @@ VIEW.settings = (root) => {
       row('Bit depth', '24-bit keeps the most detail. 16-bit files are smaller.', sel('recBits', [['24', '24-bit'], ['16', '16-bit']])),
     ],
     Collaboration: () => [collabPanel()],
+    'Phone link': () => [phonePanel()],
     Updates: () => [
       row('Update automatically', 'Checks when the app opens and every minute.', tog('autoUpdate')),
       row('Check now', null, btn('Check for updates', async () => toast(await api['update:check']()), 'primary')),

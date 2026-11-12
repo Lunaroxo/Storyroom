@@ -457,3 +457,32 @@ body[data-paper="dark"] { --paper-ink: #e9e6df; }
 
 .link-failed { color: #ff8d7c; }
 
+
+/* --- Recording with script --- */
+.rec-layout { flex: 1; display: flex; min-height: 0; }
+.rec-main { flex: 1; min-width: 0; }
+.rec-script { width: 420px; flex: none; border-left: 1px solid var(--line); background: var(--glass); display: flex; flex-direction: column; min-height: 0; padding: 14px; gap: 10px; }
+.rec-script h2 { font-size: 16px; }
+.script-head { display: flex; flex-direction: column; gap: 8px; }
+.script-lines { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 5px; padding-right: 4px; }
+.line-row { position: relative; text-align: left; background: var(--panel); border: 1px solid var(--line); border-radius: 9px; padding: 9px 12px; color: var(--text); font: inherit; cursor: pointer; display: flex; flex-direction: column; gap: 2px; transition: border-color .15s, background-color .15s; }
+.line-row:hover { border-color: #565a66; }
+.line-row.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, var(--panel)); }
+.line-who { font-size: 11px; font-weight: 700; letter-spacing: .06em; color: var(--accent); }
+.line-text { font-size: 14px; }
+.line-done { position: absolute; top: 7px; right: 10px; font-size: 12px; color: #7fcf8f; }
+.rec-now { margin-top: 10px; font-size: 14px; }
+.ask-banner { display: flex; align-items: center; justify-content: space-between; gap: 10px; background: color-mix(in srgb, var(--accent) 16%, var(--panel)); border: 1px solid var(--accent); border-radius: 8px; padding: 8px 10px; }
+.ask-lines { max-height: 40vh; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
+.ask-line { display: flex; gap: 8px; align-items: flex-start; cursor: pointer; }
+.ask-line input { accent-color: var(--accent); margin-top: 3px; }
+.small-link { font-size: 12px; padding: 0 4px; }
+
+/* --- Phone link --- */
+.phone-box { display: flex; gap: 20px; align-items: flex-start; background: var(--glass); border: 1px solid var(--line); border-radius: 12px; padding: 18px; margin: 12px 0; }
+.qr { width: 190px; flex: none; background: #fff; border-radius: 10px; padding: 6px; }
+.qr svg { display: block; width: 100%; height: auto; }
+.phone-url { font: 12px Consolas, monospace; color: var(--muted); word-break: break-all; margin: 8px 0 12px; }
+#phoneBtn .live-dot { fill: #7fcf8f; display: none; }
+#phoneBtn.live { color: #7fcf8f; }
+#phoneBtn.live .live-dot { display: inline; }

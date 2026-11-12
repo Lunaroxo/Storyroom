@@ -27,7 +27,7 @@ async function probe(items) {
 function addToLibrary(infos, extra = {}) {
   const items = infos.map((info) => ({
     id: uid(), title: info.title, artist: info.artist || '', file: info.file, kind: extra.kind || null, folder: extra.folder || '', tags: [],
-    duration: info.duration || 0, source: info.source || '', sourceUrl: info.sourceUrl || '', license: info.license || '', notes: '', fav: false, addedAt: Date.now(),
+    duration: info.duration || 0, source: info.source || '', sourceUrl: info.sourceUrl || '', license: info.license || '', notes: '', fav: false, addedAt: Date.now(), line: info.line || '',
   }));
   S.library.items.push(...items);
   touch();

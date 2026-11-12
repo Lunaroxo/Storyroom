@@ -323,17 +323,22 @@ function tunnelClosed(id) {
   c.emit('close');
 }
 
+// The link tool (cloudflared.exe) downloads once, after the person agrees.
+async function ensureLinkTool(why) {
+  if (await api['tunnel:ready']()) return true;
+  const ok = await dialogBox({ title: 'Download the link tool?', text: `${why} Storyroom uses Cloudflare's free Quick Tunnel for this (no account needed). It downloads cloudflared.exe from github.com/cloudflare once.`, okText: 'Download and turn on' });
+  if (!ok) return false;
+  toast('Downloading the link tool...');
+  await api['tunnel:install']();
+  return true;
+}
+
 async function startBackupLink() {
   if (collab.role !== 'host' || !settings.backupLink || collab.linkState === 'starting') return;
   collab.linkState = 'starting';
   refreshCollabUI();
   try {
-    if (!(await api['tunnel:ready']())) {
-      const ok = await dialogBox({ title: 'Turn on the backup link?', text: 'Some networks block direct links between PCs. Storyroom can make your PC reachable through Cloudflare\'s free Quick Tunnel instead (no account needed). It downloads cloudflared.exe from github.com/cloudflare once.', okText: 'Turn on' });
-      if (!ok) { collab.linkState = 'off'; setSetting('backupLink', false); refreshCollabUI(); return; }
-      toast('Downloading the backup link tool...');
-      await api['tunnel:install']();
-    }
+    if (!(await ensureLinkTool('Some networks block direct links between PCs, so friends join through a backup link instead.'))) { collab.linkState = 'off'; setSetting('backupLink', false); refreshCollabUI(); return; }
     if (collab.role !== 'host') return;
     collab.tunnelUrl = await api['tunnel:start']();
     collab.linkState = 'ready';
@@ -422,6 +427,20 @@ async function onGuestData(g, d) {
     g.conn.send({ t: 'file', rel: d.rel, data: await api['file:read'](d.rel) });
   } else if (d.t === 'putFile' && sharedPath(d.rel) && JSON.stringify(g.perms).includes('"edit"')) {
     await api['file:write'](d.rel, d.data);
+  } else if (d.t === 'take' && d.data) {
+    // A voice take recorded by someone in the session goes into this show's Voice Takes folder.
+    const bytes = new Uint8Array(d.data);
+    const tag = (a, b) => String.fromCharCode(...bytes.subarray(a, b));
+    if (bytes.length < 45 || bytes.length > 300e6 || tag(0, 4) !== 'RIFF' || tag(8, 12) !== 'WAVE') { g.conn.send({ t: 'takeSaved', id: d.id, ok: false }); return; }
+    const folder = settings.recFolder || 'Voice Takes';
+    if (!S.library.folders.includes(folder)) S.library.folders.push(folder);
+    const name = String(d.name || 'Take').slice(0, 120);
+    const info = await api['lib:saveAudio'](name, d.data);
+    addToLibrary([{ ...info, source: `Recorded by ${g.name}`, line: typeof d.line === 'string' ? d.line.slice(0, 100) : '' }], { kind: 'sound', folder });
+    refreshLibTitles();
+    rec.redraw?.();
+    toast(`${g.name} sent a take: ${name}`);
+    g.conn.send({ t: 'takeSaved', id: d.id, ok: true });
   }
 }
 
@@ -584,6 +603,13 @@ async function onHostData(conn, d) {
     refreshCollabUI();
   } else if (d.t === 'ops' && collab.role === 'guest') applyRemote(d.ops);
   else if (d.t === 'locks') { collab.locks = d.locks; refreshLocks(); }
+  else if (d.t === 'recordAsk' && Array.isArray(d.lines)) showRecordAsk({ from: String(d.from || 'The host'), part: String(d.part || ''), lines: d.lines.filter((l) => typeof l?.text === 'string').map((l) => ({ key: String(l.key), who: String(l.who || ''), text: l.text, kind: String(l.kind || 'text') })) });
+  else if (d.t === 'takeSaved') {
+    const take = rec.takes.find((t) => t.id === d.id);
+    if (take) take.saved = d.ok ? true : false;
+    toast(d.ok ? `Take sent to ${collab.hostName}'s library` : 'The host could not save that take.', !d.ok);
+    rec.redraw?.();
+  }
   else if (d.t === 'file') {
     if (d.data) await api['file:write'](d.rel, d.data);
     fileArrived(d.rel);
@@ -603,7 +629,7 @@ async function leaveSession(message) {
 }
 
 // --- Guest view limits -------------------------------------------------------------------------
-const VIEW_SECTION = { show: 'show', writing: 'writing', characters: 'characters', world: 'world', storyboard: 'storyboard', library: 'library', find: 'library', record: 'library', todo: 'todo', production: 'production' };
+const VIEW_SECTION = { show: 'show', writing: 'writing', characters: 'characters', world: 'world', storyboard: 'storyboard', library: 'library', find: 'library', todo: 'todo', production: 'production' };
 const sectionOf = (view) => VIEW_SECTION[view];
 
 function applyGuestRail() {
@@ -611,7 +637,8 @@ function applyGuestRail() {
     const sec = sectionOf(b.dataset.view);
     const someItemShared = Object.values(collab.perms?.items || {}).some((v) => v !== 'hidden');
     b.classList.toggle('off', collab.role === 'guest' && !!sec && effective(collab.perms, sec) === 'hidden' && !someItemShared);
-    if (collab.role === 'guest' && ['find', 'record'].includes(b.dataset.view)) b.classList.toggle('off', effective(collab.perms, 'library') !== 'edit');
+    if (collab.role === 'guest' && b.dataset.view === 'find') b.classList.toggle('off', effective(collab.perms, 'library') !== 'edit');
+    if (b.dataset.view === 'record') b.classList.remove('off'); // anyone in a session can record and send takes
   });
   $('#livePill')?.classList.toggle('off', !collab.role);
   if ($('#livePill')) $('#livePill').textContent = collab.role === 'host' ? `Live: ${collab.guests.size}` : collab.role === 'guest' ? 'Joined' : '';
@@ -736,3 +763,67 @@ function connectionTools() {
       field('turnUser', 'Username'),
       field('turnPass', 'Password', 'password')));
 }
+
+// --- Phone link ------------------------------------------------------------------------------
+// A private website from this PC for recording and reading on a phone, from anywhere.
+const phoneLink = { url: null, state: null };
+const redrawPhone = () => { if (ui.view === 'settings' && ui.settingsTab === 'Phone link') redrawSettings?.(); document.querySelector('#phoneBtn')?.classList.toggle('live', !!phoneLink.url); };
+
+async function startPhoneLink() {
+  if (phoneLink.state === 'starting') return;
+  try {
+    if (!(await ensureLinkTool('Your phone reaches this PC over the internet through a private link.'))) return;
+    phoneLink.state = 'starting';
+    redrawPhone();
+    phoneLink.url = await api['phone:start']();
+    phoneLink.state = 'ready';
+  } catch (err) {
+    phoneLink.state = `failed: ${String(err.message).replace(/^Error invoking remote method '[^']+': (Error: )?/, '')}`;
+  }
+  redrawPhone();
+}
+
+function stopPhoneLink() {
+  api['phone:stop']();
+  Object.assign(phoneLink, { url: null, state: null });
+  redrawPhone();
+}
+
+// Takes uploaded from the phone land in the Voice Takes folder like any other take.
+function phoneTakeArrived(info) {
+  const folder = settings.recFolder || 'Voice Takes';
+  if (!S.library.folders.includes(folder)) S.library.folders.push(folder);
+  addToLibrary([{ ...info, source: 'Phone' }], { kind: 'sound', folder });
+  refreshLibTitles();
+  rec.redraw?.();
+  toast(`Phone take saved: ${info.title}`);
+}
+
+function phonePanel() {
+  if (phoneLink.state === 'ready') {
+    const qr = qrcode(0, 'M');
+    qr.addData(phoneLink.url);
+    qr.make();
+    const code = h('div', { class: 'qr' });
+    code.innerHTML = qr.createSvgTag({ cellSize: 6, margin: 2, scalable: true }); // generated locally from the link, no outside content
+    const copy = () => { const t = h('textarea', { value: phoneLink.url, style: 'position:fixed;opacity:0' }); document.body.append(t); t.select(); document.execCommand('copy'); t.remove(); toast('Link copied'); };
+    return h('div', {},
+      h('div', { class: 'phone-box' }, code, h('div', { class: 'grow' },
+        h('div', { class: 'set-label' }, 'Scan this with your phone camera'),
+        h('p', { class: 'muted' }, 'Or send yourself the link. It works anywhere with internet: record takes, pick lines, read the script and pages.'),
+        h('div', { class: 'phone-url' }, phoneLink.url),
+        h('div', { class: 'row' }, btn('Copy link', copy, 'primary'), btn('Turn off', stopPhoneLink, 'danger-text')))),
+      h('p', { class: 'muted' }, 'Keep Storyroom open on this PC. It stops the PC from going to sleep while the link is on (closing a laptop lid can still sleep it). Takes saved on the phone go straight into Library > Voice Takes here.'),
+      h('p', { class: 'muted' }, 'Anyone with this link can read your show and send takes, so keep it private. Each time you turn it on you get a new link and the old one stops working.'));
+  }
+  return h('div', {},
+    h('div', { class: 'phone-box' }, h('div', { class: 'grow' },
+      h('div', { class: 'set-label' }, 'Record on your phone, from anywhere'),
+      h('p', { class: 'muted' }, 'Turns this PC into a private website your phone can open, even at school or a friend\'s house. On the phone: pick a part, tap a line, record (raw, no filters) and save. Takes come straight here.'),
+      phoneLink.state === 'starting' ? h('p', {}, 'Starting the link...')
+        : btn('Turn on phone link', startPhoneLink, 'primary'),
+      String(phoneLink.state || '').startsWith('failed') && h('p', { class: 'link-failed' }, `Could not start: ${phoneLink.state.slice(8)}`))));
+}
+
+// Recording is never read-only: it only sends takes, and the host saves them into its own Voice Takes.
+

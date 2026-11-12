@@ -32,6 +32,7 @@ function upgrade(project) {
   api.onResults(onSearchResults);
   api.onFileWritten(onFileWritten);
   api.onTunnel(tunnelOpened, tunnelData, tunnelClosed);
+  api.onPhoneTake(phoneTakeArrived);
   applySettings();
   try {
     const left = sessionStorage.getItem('afterLeave');

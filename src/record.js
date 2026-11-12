@@ -1,69 +1,10 @@
 'use strict';
-// Raw mic recording: echo cancellation, noise suppression and auto gain are all off, and takes
-// are kept as uncompressed 24-bit WAV.
+// Recording: raw mic takes (24-bit WAV) next to the script. Click a line and takes are named after it;
+// Save drops them straight into the Voice Takes folder. A guest's takes go to the host's library.
 const WORKLET_URL = new URL('rec-worklet.js', document.currentScript.src).href;
-const rec = { takes: [], live: null, count: 0 }; // microphone choice lives in settings.micDevice
+const rec = { takes: [], live: null, count: 0, part: '', line: null, ask: null }; // microphone choice lives in settings.micDevice
 
-function encodeWav(channels, sampleRate, bits = 24) {
-  const bytes = bits / 8;
-  const frames = channels[0].length;
-  const n = channels.length;
-  const buf = new ArrayBuffer(44 + frames * n * bytes);
-  const v = new DataView(buf);
-  const str = (o, s) => [...s].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
-  str(0, 'RIFF'); v.setUint32(4, 36 + frames * n * bytes, true); str(8, 'WAVEfmt ');
-  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, n, true); v.setUint32(24, sampleRate, true);
-  v.setUint32(28, sampleRate * n * bytes, true); v.setUint16(32, n * bytes, true); v.setUint16(34, bits, true);
-  str(36, 'data'); v.setUint32(40, frames * n * bytes, true);
-  let o = 44;
-  for (let i = 0; i < frames; i++) {
-    for (let c = 0; c < n; c++) {
-      const s = Math.max(-1, Math.min(1, channels[c][i]));
-      if (bytes === 2) { v.setInt16(o, Math.round(s < 0 ? s * 0x8000 : s * 0x7fff), true); o += 2; continue; }
-      const x = Math.round(s < 0 ? s * 0x800000 : s * 0x7fffff);
-      v.setUint8(o, x & 255); v.setUint8(o + 1, (x >> 8) & 255); v.setUint8(o + 2, (x >> 16) & 255);
-      o += 3;
-    }
-  }
-  return buf;
-}
-
-async function startRecording(onLevel) {
-  const stream = await navigator.mediaDevices.getUserMedia({ audio: {
-    deviceId: settings.micDevice ? { exact: settings.micDevice } : undefined,
-    echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: { ideal: 2 },
-  } });
-  const settings = stream.getAudioTracks()[0].getSettings();
-  const ctx = new AudioContext({ sampleRate: settings.sampleRate || 48000 });
-  await ctx.audioWorklet.addModule(WORKLET_URL);
-  const channels = settings.channelCount || 1;
-  const node = new AudioWorkletNode(ctx, 'rec', { numberOfInputs: 1, numberOfOutputs: 0, channelCount: channels, channelCountMode: 'explicit' });
-  const blocks = [];
-  let peak = 0;
-  node.port.onmessage = (e) => {
-    blocks.push(e.data);
-    let p = 0;
-    for (const ch of e.data) for (const s of ch) p = Math.max(p, Math.abs(s));
-    peak = Math.max(peak, p);
-    onLevel(p);
-  };
-  ctx.createMediaStreamSource(stream).connect(node);
-  const started = Date.now();
-  rec.live = {
-    started,
-    async stop() {
-      stream.getTracks().forEach((t) => t.stop());
-      await ctx.close();
-      const frames = blocks.reduce((sum, b) => sum + b[0].length, 0);
-      const out = Array.from({ length: channels }, () => new Float32Array(frames));
-      let at = 0;
-      for (const b of blocks) { out.forEach((ch, c) => ch.set(b[c] || b[0], at)); at += b[0].length; }
-      const wav = encodeWav(out, ctx.sampleRate, +settings.recBits || 24);
-      rec.count++;
-      return { id: uid(), name: `Take ${rec.count}`, wav, url: URL.createObjectURL(new Blob([wav], { type: 'audio/wav' })), secs: frames / ctx.sampleRate, peak, rate: ctx.sampleRate, channels, saved: false };
-    },
-  };
-}
+const takesFor = (key) => S.library.items.filter((i) => i.line === key).length;
 
 function saveTakeDialog(take) {
   return new Promise((resolve) => {
@@ -80,10 +21,25 @@ function saveTakeDialog(take) {
         h('label', { class: 'field' }, h('span', {}, 'Name'), name),
         h('label', { class: 'field' }, h('span', {}, 'Folder'), folder, newName),
         h('div', { class: 'row end' }, h('button', { type: 'button', class: 'btn', onclick: () => close(null) }, 'Cancel'), h('button', { type: 'submit', class: 'btn primary' }, 'Save'))));
-    if (!L.folders.includes(want)) { folder.value = NEW; newName.classList.remove('off'); } // defaults to a new folder with that name
+    if (!L.folders.includes(want)) { folder.value = NEW; newName.classList.remove('off'); }
     document.body.append(overlay);
     name.select();
   });
+}
+
+// Saves a take to this show's library, or sends it to the host when visiting someone's show.
+async function keepTake(take, name, folder) {
+  if (collab.role === 'guest') {
+    take.saved = 'sending';
+    collab.host.send({ t: 'take', id: take.id, name, line: take.line?.key || '', data: take.wav });
+    return;
+  }
+  if (folder && !S.library.folders.includes(folder)) S.library.folders.push(folder);
+  const info = await api['lib:saveAudio'](name, take.wav);
+  addToLibrary([{ ...info, source: 'Recorded', line: take.line?.key || '' }], { kind: 'sound', folder });
+  refreshLibTitles();
+  take.saved = true;
+  toast(`Saved "${name}" to ${folder || 'Library'}`);
 }
 
 VIEW.record = (root) => {
@@ -91,6 +47,9 @@ VIEW.record = (root) => {
   const time = h('div', { class: 'rec-time' }, '0:00.0');
   const devices = h('span', {});
   const list = h('div', { class: 'take-list' });
+  const now = h('div', { class: 'rec-now' });
+  const script = h('div', { class: 'script-lines' });
+  const scriptHead = h('div', { class: 'script-head' });
   let raf = 0;
   let level = 0;
 
@@ -112,16 +71,19 @@ VIEW.record = (root) => {
   async function toggle() {
     if (rec.live) {
       cancelAnimationFrame(raf);
-      const take = await rec.live.stop();
+      const result = await rec.live.stop();
       rec.live = null;
-      rec.takes.unshift(take);
+      rec.count++;
+      const line = rec.line;
+      rec.takes.unshift({ ...result, id: uid(), line, name: line ? takeName(line) : `Take ${rec.count}`, url: URL.createObjectURL(new Blob([result.wav], { type: 'audio/wav' })), saved: false });
       meter.firstChild.style.width = '0%';
       draw();
       return;
     }
     try {
-      await startRecording((p) => { level = Math.max(level, p); });
+      rec.live = await startRawRecording({ workletUrl: WORKLET_URL, deviceId: settings.micDevice, bits: +settings.recBits || 24, onLevel: (p) => { level = Math.max(level, p); } });
     } catch (err) {
+      rec.live = null;
       return toast(err.name === 'NotAllowedError' ? 'Microphone blocked. Allow it in Windows Settings > Privacy > Microphone.' : `Could not start the microphone: ${err.message}`, true);
     }
     drawDevices();
@@ -129,39 +91,97 @@ VIEW.record = (root) => {
     draw();
   }
 
+  // The script: a part picked here, or lines someone asked this person to record.
+  function linesNow() {
+    if (rec.ask) return { title: `${rec.ask.from} asked you to record: ${rec.ask.part}`, lines: rec.ask.lines };
+    const [epId, partId] = rec.part.split('|');
+    const ep = S.episodes.find((e) => e.id === epId);
+    const part = ep && allParts(ep).find((p) => p.id === partId);
+    return part ? { title: `${ep.title} / ${part.title}`, lines: scriptLines(part.html, part.id), ep, part } : { title: '', lines: [] };
+  }
+
+  function drawScript() {
+    const now_ = linesNow();
+    const partChoices = S.episodes.flatMap((e) => partOptions(e).map(([id, label]) => [`${e.id}|${id}`, `${e.title}: ${label.trim()}`]));
+    scriptHead.replaceChildren(
+      rec.ask ? h('div', { class: 'ask-banner' }, h('b', {}, now_.title), btn('Close', () => { rec.ask = null; drawScript(); }))
+        : select([['', 'Pick the script to read...'], ...partChoices], rec.part, (v) => { rec.part = v; rec.line = null; drawScript(); draw(); }, { 'aria-label': 'Script to read', class: 'wide' }),
+      collab.role === 'host' && collab.guests.size > 0 && now_.lines.length > 0 && !rec.ask && btn('Ask someone to record', () => askToRecord(now_), 'primary'));
+    script.replaceChildren(...(now_.lines.length ? now_.lines.map((line) => {
+      const n = takesFor(line.key);
+      return h('button', { type: 'button', class: `line-row ${rec.line?.key === line.key ? 'on' : ''} ${line.kind === 'dlg' ? 'dlg' : ''}`, onclick: () => { rec.line = rec.line?.key === line.key ? null : line; drawScript(); draw(); } },
+        line.who && h('span', { class: 'line-who' }, line.who),
+        h('span', { class: 'line-text' }, line.text),
+        n > 0 && h('span', { class: 'line-done', title: `${n} saved take${n > 1 ? 's' : ''}` }, `✓ ${n}`));
+    }) : [h('p', { class: 'muted pad' }, rec.part ? 'This part has no text yet.' : 'Pick a part to see its lines here. Click a line before recording and the take is named after it.')]));
+  }
+
   function draw() {
     big.textContent = rec.live ? 'Stop' : 'Record';
     big.classList.toggle('on', !!rec.live);
     root.classList.toggle('recording', !!rec.live);
+    now.replaceChildren(rec.line ? h('span', {}, h('span', { class: 'muted' }, 'Recording line: '), h('b', {}, takeName(rec.line))) : h('span', { class: 'muted' }, 'No line picked: takes are named Take 1, Take 2...'));
     list.replaceChildren(...(rec.takes.length ? rec.takes.map((t) => h('div', { class: `take-row ${t.saved ? 'saved' : ''}` },
       h('button', { class: 'row-play', type: 'button', title: 'Play', 'aria-label': `Play ${t.name}`, onclick: () => playRemote(t.url, t.name) }, '▶'),
       h('input', { class: 'grow take-name', value: t.name, 'aria-label': 'Take name', oninput: (e) => { t.name = e.target.value; } }),
       h('span', { class: 'muted' }, `${t.secs < 60 ? `${t.secs.toFixed(1)}s` : clock(t.secs)} | ${(t.rate / 1000).toFixed(1)} kHz ${t.channels === 1 ? 'mono' : 'stereo'}`),
       t.peak >= 0.99 && h('span', { class: 'clip-tag', title: 'Too loud: the mic hit its limit' }, 'Clipped'),
-      t.saved ? h('span', { class: 'saved-tag' }, 'Saved') : btn('Save', async () => {
-        const choice = await saveTakeDialog(t);
-        if (!choice) return;
-        if (choice.folder && !S.library.folders.includes(choice.folder)) S.library.folders.push(choice.folder);
-        const info = await api['lib:saveAudio'](choice.name, t.wav);
-        addToLibrary([{ ...info, source: 'Recorded' }], { kind: 'sound', folder: choice.folder });
-        refreshLibTitles();
-        t.name = choice.name;
-        t.saved = true;
-        toast(`Saved "${choice.name}" to ${choice.folder || 'Library'}`);
-        draw();
-      }, 'primary'),
+      t.saved === 'sending' ? h('span', { class: 'saved-tag' }, 'Sending...')
+        : t.saved ? h('span', { class: 'saved-tag' }, collab.role === 'guest' ? 'Sent' : 'Saved')
+          : [btn(collab.role === 'guest' ? 'Send' : 'Save', async () => { await keepTake(t, t.name, settings.recFolder || 'Voice Takes'); draw(); drawScript(); }, 'primary'),
+            collab.role !== 'guest' && h('button', { class: 'link small-link', type: 'button', onclick: async () => {
+              const choice = await saveTakeDialog(t);
+              if (!choice) return;
+              t.name = choice.name;
+              await keepTake(t, choice.name, choice.folder);
+              draw(); drawScript();
+            } }, 'Save as...')],
       h('button', { class: 'x show', type: 'button', title: 'Delete take', onclick: () => { URL.revokeObjectURL(t.url); rec.takes.splice(rec.takes.indexOf(t), 1); draw(); } }, '×')))
       : [h('div', { class: 'empty-state small' }, h('p', {}, 'Press Record, do a take, press Stop. Keep going until one feels right.'))]));
   }
+  rec.redraw = () => { if (ui.view === 'record') { draw(); drawScript(); } };
 
   const big = h('button', { class: 'rec-btn', type: 'button', onclick: toggle }, 'Record');
-  root.append(h('section', { class: 'pane' }, h('div', { class: 'scroll' }, h('div', { class: 'column' },
-    h('div', { class: 'row between' }, h('h1', { class: 'view-title' }, 'Recording'), devices),
-    h('p', { class: 'muted' }, 'Raw microphone: no noise removal, echo cancelling or auto volume. Takes stay here until you save them, and are lost when the app closes.'),
-    h('div', { class: 'rec-deck' }, big, h('div', { class: 'grow' }, time, meter)),
-    h('h2', { class: 'section-title' }, 'Takes'),
-    list))));
+  root.append(h('section', { class: 'pane' }, h('div', { class: 'rec-layout' },
+    h('div', { class: 'scroll rec-main' }, h('div', { class: 'column' },
+      h('div', { class: 'row between' }, h('h1', { class: 'view-title' }, 'Recording'), devices),
+      h('p', { class: 'muted' }, 'Raw microphone: no noise removal, echo cancelling or auto volume. Takes stay here until you save them, and are lost when the app closes.'),
+      h('div', { class: 'rec-deck' }, big, h('div', { class: 'grow' }, time, meter, now)),
+      h('h2', { class: 'section-title' }, 'Takes'),
+      list)),
+    h('aside', { class: 'rec-script' }, h('h2', {}, 'Script'), scriptHead, script))));
   drawDevices();
   draw();
+  drawScript();
   if (rec.live) tick();
 };
+
+// Host: send some lines to one person in the session to record.
+async function askToRecord({ title, lines }) {
+  const people = [...collab.guests.values()];
+  const who = select(people.map((g) => [g.clientId, g.name]), people[0].clientId, () => {}, { 'aria-label': 'Who should record', class: 'wide' });
+  const boxes = lines.map((l) => h('label', { class: 'ask-line' }, h('input', { type: 'checkbox', checked: takesFor(l.key) === 0 }), h('span', {}, takeName(l))));
+  const ok = await new Promise((resolve) => {
+    const close = (v) => { overlay.remove(); resolve(v); };
+    const overlay = h('div', { class: 'overlay', role: 'dialog', 'aria-modal': 'true' },
+      h('form', { class: 'dialog wide-dialog', onsubmit: (e) => { e.preventDefault(); close(true); }, onkeydown: (e) => { if (e.key === 'Escape') close(false); } },
+        h('h3', {}, 'Ask someone to record'),
+        h('label', { class: 'field' }, h('span', {}, 'Who'), who),
+        h('div', { class: 'field' }, h('span', {}, `Lines from ${title} (ticked ones are sent; lines with no takes yet start ticked)`), h('div', { class: 'ask-lines' }, boxes)),
+        h('div', { class: 'row end' }, h('button', { type: 'button', class: 'btn', onclick: () => close(false) }, 'Cancel'), h('button', { type: 'submit', class: 'btn primary' }, 'Send request'))));
+    document.body.append(overlay);
+  });
+  const picked = lines.filter((_, i) => boxes[i].querySelector('input').checked);
+  if (!ok || !picked.length) return;
+  const g = collab.guests.get(who.value);
+  g?.conn.send({ t: 'recordAsk', from: myName(), part: title, lines: picked });
+  toast(`Asked ${g?.name} to record ${picked.length} line${picked.length > 1 ? 's' : ''}`);
+}
+
+// Guest: a request from the host appears as a note with a button that opens the lines.
+function showRecordAsk(ask) {
+  const note = h('div', { class: 'toast update' }, `${ask.from} asks you to record ${ask.lines.length} line${ask.lines.length > 1 ? 's' : ''}. `,
+    btn('Open', () => { rec.ask = ask; note.remove(); go('record'); }, 'primary'),
+    btn('Later', () => note.remove()));
+  $('#toasts').append(note);
+}
