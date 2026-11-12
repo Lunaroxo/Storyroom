@@ -226,6 +226,99 @@ function newCode() {
   return [...crypto.getRandomValues(new Uint8Array(6))].map((n) => abc[n % abc.length]).join('');
 }
 
+// --- Backup link (Cloudflare Quick Tunnel) ------------------------------------------------------
+// A WebSocket that behaves like a PeerJS connection: send / on('data') / on('close') / open.
+// Binary file data travels as base64, and big messages are split into parts.
+const PART = 512 * 1024;
+const toB64 = (bytes) => { let s = ''; for (let i = 0; i < bytes.length; i += 32768) s += String.fromCharCode(...bytes.subarray(i, i + 32768)); return btoa(s); };
+const fromB64 = (b64) => Uint8Array.from(atob(b64), (ch) => ch.charCodeAt(0));
+const pack = (obj) => JSON.stringify(obj, (_k, v) => (v instanceof ArrayBuffer ? { __b: toB64(new Uint8Array(v)) } : ArrayBuffer.isView(v) ? { __b: toB64(new Uint8Array(v.buffer, v.byteOffset, v.byteLength)) } : v));
+const unpack = (text) => JSON.parse(text, (_k, v) => (v && typeof v === 'object' && typeof v.__b === 'string' ? fromB64(v.__b).buffer : v));
+
+function socketConn(sendText, closeSocket) {
+  const handlers = {};
+  const parts = new Map();
+  const c = {
+    open: true, metadata: null, isLink: true,
+    send(obj) {
+      if (!c.open) return;
+      const text = pack(obj);
+      if (text.length <= PART) return sendText(text);
+      const id = uid();
+      const n = Math.ceil(text.length / PART);
+      for (let i = 0; i < n; i++) sendText(JSON.stringify({ __part: id, i, n, s: text.slice(i * PART, (i + 1) * PART) }));
+    },
+    receive(text) {
+      let m;
+      try { m = unpack(text); } catch { return null; }
+      if (!m?.__part) return m;
+      const got = parts.get(m.__part) || [];
+      got[m.i] = m.s;
+      parts.set(m.__part, got);
+      if (got.filter((x) => x != null).length < m.n) return null;
+      parts.delete(m.__part);
+      return unpack(got.join(''));
+    },
+    close() { c.open = false; closeSocket(); },
+    on(ev, fn) { (handlers[ev] ||= []).push(fn); },
+    emit(ev, x) { (handlers[ev] || []).forEach((f) => f(x)); },
+  };
+  return c;
+}
+
+const linkConns = new Map();
+function tunnelOpened(id) {
+  if (collab.role !== 'host') return api['tunnel:kick'](id);
+  linkConns.set(id, socketConn((t) => api['tunnel:send'](id, t), () => api['tunnel:kick'](id)));
+}
+function tunnelData({ id, text }) {
+  const c = linkConns.get(id);
+  const msg = c?.receive(text);
+  if (!msg) return;
+  if (c.metadata) return c.emit('data', msg);
+  if (msg.t === 'hello') { // the first message says who is joining, like PeerJS metadata
+    c.metadata = { name: msg.name, clientId: msg.clientId };
+    admit(c);
+  }
+}
+function tunnelClosed(id) {
+  const c = linkConns.get(id);
+  if (!c) return;
+  linkConns.delete(id);
+  c.open = false;
+  c.emit('close');
+}
+
+async function startBackupLink() {
+  if (collab.role !== 'host' || !settings.backupLink || collab.linkState === 'starting') return;
+  collab.linkState = 'starting';
+  refreshCollabUI();
+  try {
+    if (!(await api['tunnel:ready']())) {
+      const ok = await dialogBox({ title: 'Turn on the backup link?', text: 'Some networks block direct links between PCs. Storyroom can make your PC reachable through Cloudflare\'s free Quick Tunnel instead (no account needed). It downloads cloudflared.exe from github.com/cloudflare once.', okText: 'Turn on' });
+      if (!ok) { collab.linkState = 'off'; setSetting('backupLink', false); refreshCollabUI(); return; }
+      toast('Downloading the backup link tool...');
+      await api['tunnel:install']();
+    }
+    if (collab.role !== 'host') return;
+    collab.tunnelUrl = await api['tunnel:start']();
+    collab.linkState = 'ready';
+    (collab.pendingHints || []).forEach(sendLinkHint);
+    collab.pendingHints = [];
+  } catch (err) {
+    collab.linkState = `failed: ${String(err.message).replace(/^Error invoking remote method '[^']+': (Error: )?/, '')}`;
+  }
+  refreshCollabUI();
+}
+
+// Tells a joining guest the backup address through the matchmaking server, so the code still works
+// even when the direct link never opens.
+function sendLinkHint(guestPeerId) {
+  if (!collab.tunnelUrl) { (collab.pendingHints ||= []).push(guestPeerId); return; }
+  const hint = collab.peer?.connect(guestPeerId, { metadata: { storyroomLink: collab.tunnelUrl } });
+  setTimeout(() => hint?.close(), 60000);
+}
+
 function startHosting() {
   if (!settings.myName) return toast('Type your name first', true);
   const code = newCode();
@@ -238,13 +331,17 @@ function startHosting() {
     api['backup:now'](); // a restore point from before anyone joined
     collab.snapshot = structuredClone(S);
     refreshCollabUI();
+    startBackupLink();
   });
   peer.on('error', (e) => {
     if (e.type === 'unavailable-id') { peer.destroy(); startHosting(); return; }
     toast(`Sharing problem: ${e.message}`, true);
   });
   peer.on('disconnected', () => { if (collab.role === 'host' && !peer.destroyed) peer.reconnect(); }); // keeps the code reachable
-  peer.on('connection', (conn) => conn.on('open', () => admit(conn)));
+  peer.on('connection', (conn) => {
+    sendLinkHint(conn.peer);
+    conn.on('open', () => admit(conn));
+  });
 }
 
 async function admit(conn) {
@@ -303,7 +400,8 @@ function setGuestPerms(g, perms) {
 function stopHosting() {
   for (const g of collab.guests.values()) { g.conn.send({ t: 'end' }); }
   setTimeout(() => collab.peer?.destroy(), 300);
-  Object.assign(collab, { role: null, code: '', snapshot: null, locks: [] });
+  api['tunnel:stop']();
+  Object.assign(collab, { role: null, code: '', snapshot: null, locks: [], tunnelUrl: null, linkState: null, pendingHints: [] });
   collab.guests.clear();
   refreshLocks();
   refreshCollabUI();
@@ -326,6 +424,9 @@ function setJoinState(text, failed) {
 
 function joinFailed(text) {
   clearTimeout(collab.joinTimer);
+  clearTimeout(collab.linkTimer);
+  collab.linkTrying = false;
+  collab.linkSocket?.close();
   collab.peer?.destroy();
   collab.peer = null;
   setJoinState(text, true);
@@ -343,24 +444,63 @@ async function joinSession(rawCode) {
   collab.peer = peer;
   setJoinState('Finding the session...');
   clearTimeout(collab.joinTimer);
-  collab.joinTimer = setTimeout(() => { if (collab.role !== 'guest' && collab.joinState?.text !== 'Waiting for the host to let you in...') joinFailed(BLOCKED_HELP); }, 25000);
+  collab.linkHint = null;
+  collab.linkTrying = false;
+  let directOpen = false;
+  // A blocked direct link switches to the host's backup link when the host has one.
+  const blocked = () => (collab.linkHint ? joinViaLink(collab.linkHint) : joinFailed(BLOCKED_HELP));
+  collab.joinTimer = setTimeout(() => { if (collab.role !== 'guest' && !directOpen && !collab.linkTrying) blocked(); }, 25000);
+  peer.on('connection', (hint) => {
+    const link = hint.metadata?.storyroomLink;
+    if (!link || !/^https:\/\/[a-z0-9-]+\.trycloudflare\.com$/.test(link) || collab.role === 'guest') return;
+    collab.linkHint = link;
+    clearTimeout(collab.linkTimer);
+    collab.linkTimer = setTimeout(() => { if (!directOpen && collab.role !== 'guest') joinViaLink(link); }, 7000);
+  });
   peer.on('error', (e) => joinFailed(e.type === 'peer-unavailable' ? 'No session with that code is open right now. Check the code, and that the host still has sharing on.'
     : e.type === 'network' || e.type === 'server-error' || e.type === 'socket-error' ? 'Could not reach the matchmaking server. Check your internet connection.' : `Could not connect: ${e.message}`));
   peer.on('open', () => {
     const conn = peer.connect(PEER_PREFIX + code, { reliable: true, metadata: { name: myName(), clientId: collab.clientId } });
     setJoinState('Reaching their PC...');
-    conn.on('open', () => setJoinState('Connected. Waiting for the host to let you in...'));
+    conn.on('open', () => { directOpen = true; clearTimeout(collab.linkTimer); setJoinState('Connected. Waiting for the host to let you in...'); });
     conn.on('data', (d) => onHostData(conn, d));
-    conn.on('close', () => { if (collab.role === 'guest') leaveSession('The session ended.'); });
-    conn.on('error', () => joinFailed(BLOCKED_HELP));
+    conn.on('close', () => { if (collab.role === 'guest' && collab.host === conn) leaveSession('The session ended.'); });
+    conn.on('error', () => { if (!directOpen) blocked(); });
     // PeerJS creates the link a moment after connect(); a failed direct link shows up here quickly.
     const watchIce = () => {
       const pc = conn.peerConnection;
       if (!pc) return setTimeout(watchIce, 200);
-      pc.addEventListener('iceconnectionstatechange', () => { if (pc.iceConnectionState === 'failed' && collab.role !== 'guest') joinFailed(BLOCKED_HELP); });
+      pc.addEventListener('iceconnectionstatechange', () => { if (pc.iceConnectionState === 'failed' && collab.role !== 'guest') blocked(); });
     };
     watchIce();
   });
+}
+
+function joinViaLink(link) {
+  if (collab.linkTrying || collab.role === 'guest') return;
+  collab.linkTrying = true;
+  clearTimeout(collab.joinTimer);
+  setJoinState("Direct link blocked, so connecting through the host's backup link...");
+  let tries = 0;
+  const attempt = () => {
+    const ws = new WebSocket(link.replace(/^https:/, 'wss:'));
+    const c = socketConn((t) => ws.send(t), () => ws.close());
+    let opened = false;
+    collab.linkSocket = ws;
+    ws.onopen = () => {
+      opened = true;
+      ws.send(JSON.stringify({ t: 'hello', name: myName(), clientId: collab.clientId }));
+      setJoinState('Connected. Waiting for the host to let you in...');
+    };
+    ws.onmessage = (e) => { const m = c.receive(e.data); if (m) onHostData(c, m); };
+    ws.onclose = () => {
+      c.open = false;
+      if (collab.role === 'guest' && collab.host === c) leaveSession('The session ended.');
+      else if (!opened && collab.linkTrying && ++tries < 10) setTimeout(attempt, 2500); // a new address takes a few seconds to go live
+      else if (collab.role !== 'guest' && collab.linkTrying) joinFailed('Could not reach the host through the backup link either. Ask them to check Settings > Collaboration on their PC.');
+    };
+  };
+  attempt();
 }
 
 // Tells people whether their network allows direct links, and whether a relay is working.
@@ -390,13 +530,16 @@ async function onHostData(conn, d) {
   else if (d.t === 'state') {
     if (collab.role !== 'guest') {
       clearTimeout(collab.joinTimer);
+      clearTimeout(collab.linkTimer);
+      collab.linkTrying = false;
       setJoinState(null);
+      if (conn.isLink) collab.peer?.destroy(); // joined through the backup link: the direct attempt is no longer needed
       const { rootUrl } = await api['collab:guestRoot']();
       $('base').href = rootUrl;
       collab.role = 'guest';
-      collab.host = conn;
       toast(`Joined ${d.host}'s show`);
     }
+    collab.host = conn;
     S = upgrade(d.state);
     collab.snapshot = structuredClone(S);
     collab.perms = d.perms;
@@ -418,6 +561,7 @@ async function leaveSession(message) {
   const wasGuest = collab.role === 'guest';
   collab.role = null;
   collab.peer?.destroy();
+  collab.linkSocket?.close();
   if (!wasGuest) return;
   switching = true; // the shared copy must never be saved over your own show
   try { sessionStorage.setItem('afterLeave', message || 'You left the session.'); } catch { /* message only */ }
@@ -511,6 +655,14 @@ function collabPanel() {
     return h('div', {},
       h('div', { class: 'code-box' }, h('div', { class: 'muted' }, 'Share this code. Your PC is the host: keep Storyroom open while others write.'),
         h('div', { class: 'code' }, collab.code), h('div', { class: 'row' }, btn('Copy code', copy, 'primary'), btn('Stop sharing', async () => { if (await dialogBox({ title: 'Stop sharing?', text: 'Everyone in the session is disconnected.', okText: 'Stop', danger: true })) stopHosting(); }, 'danger-text'))),
+      h('div', { class: 'set-row' }, h('div', { class: 'set-text' }, h('div', { class: 'set-label' }, 'Backup link for blocked networks'),
+        h('div', { class: `muted ${String(collab.linkState).startsWith('failed') ? 'link-failed' : ''}` }, collab.linkState === 'ready' ? 'Ready. Friends whose network blocks direct links are connected through it automatically (Cloudflare Quick Tunnel).'
+          : collab.linkState === 'starting' ? 'Starting...' : String(collab.linkState || '').startsWith('failed') ? `Could not start: ${collab.linkState.slice(8)}` : 'Off. Friends on strict networks will not be able to join.')),
+        h('input', { type: 'checkbox', class: 'switch', checked: settings.backupLink, 'aria-label': 'Backup link', onchange: (e) => {
+          setSetting('backupLink', e.target.checked);
+          if (e.target.checked) startBackupLink();
+          else { api['tunnel:stop'](); collab.tunnelUrl = null; collab.linkState = 'off'; refreshCollabUI(); }
+        } })),
       h('div', { class: 'set-row' }, h('div', { class: 'set-text' }, h('div', { class: 'set-label' }, 'Ask before someone joins'), h('div', { class: 'muted' }, 'Recommended. Anyone with the code can ask.')), h('input', { type: 'checkbox', class: 'switch', checked: settings.askJoin, onchange: (e) => setSetting('askJoin', e.target.checked) })),
       h('div', { class: 'set-row' }, h('div', { class: 'set-text' }, h('div', { class: 'set-label' }, 'New people start with'), h('div', { class: 'muted' }, 'You can change each person below.')), select([['view', 'View only'], ['edit', 'Can edit everything']], settings.guestDefault, (v) => setSetting('guestDefault', v))),
       h('h3', { class: 'set-sub' }, `People here (${collab.guests.size})`),

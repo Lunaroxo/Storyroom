@@ -7,7 +7,7 @@ const SETTINGS_DEFAULTS = {
   addFolder: '', disabledSources: [],
   recFolder: 'Voice Takes', recBits: '24', micDevice: '', outputDevice: '',
   autoUpdate: true,
-  myName: '', askJoin: true, guestDefault: 'view', turnUrl: '', turnUser: '', turnPass: '',
+  myName: '', askJoin: true, guestDefault: 'view', turnUrl: '', turnUser: '', turnPass: '', backupLink: true,
   customTheme: null, // set from a preset the first time Custom is picked
 };
 

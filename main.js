@@ -224,6 +224,58 @@ function streamUrl(url) {
   });
 }
 
+// --- Backup link for writing together ---------------------------------------------------------
+// When two PCs cannot link directly, guests reach the host through a Cloudflare Quick Tunnel
+// (free, no account): a small WebSocket server on this PC, made reachable at a random
+// https://*.trycloudflare.com address. Both sides only make normal outgoing connections.
+const cfBin = () => path.join(app.getPath('userData'), 'bin', 'cloudflared.exe');
+let tunnel = null;
+
+async function startTunnel() {
+  if (tunnel) return tunnel.url;
+  const { WebSocketServer } = require('ws');
+  const server = require('http').createServer((_req, res) => res.end('Storyroom'));
+  const wss = new WebSocketServer({ server, maxPayload: 4 * 1024 * 1024 });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve)); // only the tunnel can reach it
+  const clients = new Map();
+  let count = 0;
+  wss.on('connection', (ws) => {
+    const id = `t${++count}`;
+    clients.set(id, ws);
+    send('tunnel:open', id);
+    ws.on('message', (m) => send('tunnel:data', { id, text: m.toString() }));
+    ws.on('close', () => { clients.delete(id); send('tunnel:close', id); });
+    ws.on('error', () => ws.terminate());
+  });
+  const proc = spawn(cfBin(), ['tunnel', '--no-autoupdate', '--url', `http://127.0.0.1:${server.address().port}`], { windowsHide: true });
+  tunnel = { server, wss, proc, clients, url: null };
+  try {
+    tunnel.url = await new Promise((resolve, reject) => {
+      let log = '';
+      const look = (chunk) => { log += chunk; const m = log.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/); if (m) resolve(m[0]); };
+      proc.stdout.on('data', look);
+      proc.stderr.on('data', look);
+      proc.on('error', reject);
+      proc.on('exit', () => reject(new Error('The backup link stopped.')));
+      setTimeout(() => reject(new Error('The backup link did not start in time.')), 40000);
+    });
+  } catch (err) {
+    stopTunnel();
+    throw err;
+  }
+  return tunnel.url;
+}
+
+function stopTunnel() {
+  if (!tunnel) return;
+  tunnel.proc.kill();
+  for (const ws of tunnel.clients.values()) ws.terminate();
+  tunnel.wss.close();
+  tunnel.server.close();
+  tunnel = null;
+}
+app.on('before-quit', stopTunnel);
+
 function grabWithYtdlp(url) {
   const id = `yt${Date.now()}`;
   send('dl:update', { id, name: url, state: 'running', pct: null });
@@ -372,6 +424,17 @@ const handlers = {
     root = startingRoot();
     win.reload();
   },
+  'tunnel:ready': () => fs.existsSync(cfBin()),
+  'tunnel:install': async () => {
+    const res = await net.fetch('https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe');
+    if (!res.ok) throw new Error(`Download failed: ${res.status}`);
+    fs.mkdirSync(path.dirname(cfBin()), { recursive: true });
+    core.atomicWrite(cfBin(), Buffer.from(await res.arrayBuffer()));
+  },
+  'tunnel:start': () => startTunnel(),
+  'tunnel:stop': () => stopTunnel(),
+  'tunnel:send': (_e, id, text) => { tunnel?.clients.get(id)?.send(String(text)); },
+  'tunnel:kick': (_e, id) => { tunnel?.clients.get(id)?.close(); },
   'words:known': (_e, list) => list.map((w) => commonWords().has(String(w).toLowerCase())),
   'backup:list': () => listBackups(),
   'backup:now': () => backupNow(true),

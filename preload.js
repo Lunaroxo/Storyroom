@@ -1,6 +1,6 @@
 const { contextBridge, ipcRenderer, webUtils, webFrame } = require('electron');
 
-const channels = ['project:load', 'project:switch', 'project:open', 'image:pick', 'image:write', 'image:read', 'lib:pick', 'lib:import', 'lib:trash', 'lib:reveal', 'web:external', 'yt:ready', 'yt:install', 'yt:grab', 'yt:stream', 'find:search', 'find:add', 'update:install', 'pdf:export', 'lib:saveAudio', 'grammar:check', 'backup:list', 'backup:restore', 'backup:now', 'words:known', 'settings:main', 'app:version', 'app:openFolder', 'update:check', 'find:sources', 'file:read', 'file:write', 'collab:guestRoot', 'collab:leave'];
+const channels = ['project:load', 'project:switch', 'project:open', 'image:pick', 'image:write', 'image:read', 'lib:pick', 'lib:import', 'lib:trash', 'lib:reveal', 'web:external', 'yt:ready', 'yt:install', 'yt:grab', 'yt:stream', 'find:search', 'find:add', 'update:install', 'pdf:export', 'lib:saveAudio', 'grammar:check', 'backup:list', 'backup:restore', 'backup:now', 'words:known', 'settings:main', 'app:version', 'app:openFolder', 'update:check', 'find:sources', 'file:read', 'file:write', 'collab:guestRoot', 'collab:leave', 'tunnel:ready', 'tunnel:install', 'tunnel:start', 'tunnel:stop', 'tunnel:send', 'tunnel:kick'];
 const api = Object.fromEntries(channels.map((c) => [c, (...args) => ipcRenderer.invoke(c, ...args)]));
 
 contextBridge.exposeInMainWorld('api', {
@@ -9,6 +9,11 @@ contextBridge.exposeInMainWorld('api', {
   pathOf: (file) => webUtils.getPathForFile(file),
   setZoom: (factor) => webFrame.setZoomFactor(factor),
   onFileWritten: (fn) => ipcRenderer.on('file:written', (_e, rel) => fn(rel)),
+  onTunnel: (open, data, close) => {
+    ipcRenderer.on('tunnel:open', (_e, id) => open(id));
+    ipcRenderer.on('tunnel:data', (_e, d) => data(d));
+    ipcRenderer.on('tunnel:close', (_e, id) => close(id));
+  },
   onUpdate: (fn) => ipcRenderer.on('update:ready', (_e, version) => fn(version)),
   onResults:(fn) => ipcRenderer.on('find:results', (_e, d) => fn(d)),
   onDownload: (update, done) => {

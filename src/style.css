@@ -454,3 +454,6 @@ body[data-paper="dark"] { --paper-ink: #e9e6df; }
 .relay-box summary { cursor: pointer; font-weight: 600; padding: 6px 0; }
 .relay-box .field input { width: 100%; }
 .delete-perm { margin-top: 10px; flex-wrap: wrap; }
+
+.link-failed { color: #ff8d7c; }
+
