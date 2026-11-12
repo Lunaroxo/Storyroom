@@ -499,3 +499,8 @@ body[data-paper="dark"] { --paper-ink: #e9e6df; }
 .presence-chip span { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .presence-chip em { color: #7fcf8f; font-style: normal; font-weight: 600; animation: breathe 1.2s ease-in-out infinite; }
 .pdot { width: 8px; height: 8px; border-radius: 50%; flex: none; margin-left: 4px; box-shadow: 0 0 0 2px var(--panel); }
+
+/* Library: Line in script and Added columns */
+.lib-table { min-width: 1060px; }
+.lib-row { grid-template-columns: 30px 26px minmax(150px, 2fr) minmax(130px, 1.6fr) minmax(70px, .9fr) 58px minmax(70px, .9fr) minmax(70px, .9fr) 54px 108px minmax(70px, 1fr); }
+

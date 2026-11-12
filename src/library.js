@@ -88,16 +88,29 @@ VIEW.library = (root) => {
   const detail = h('aside', { class: 'lib-detail' });
   const count = h('span', { class: 'muted' });
 
+  // Where each recorded line sits in the script: episode order, then parts top to bottom, then line.
+  const script = new Map();
+  let order = 0;
+  for (const e of S.episodes) {
+    for (const p of allParts(e)) {
+      scriptLines(p.html, p.id).forEach((l, i) => { if (!script.has(l.key)) script.set(l.key, { n: order++, label: `${e.title} / ${p.title} · line ${i + 1}` }); });
+    }
+  }
+  const lineOf = (i) => (i.line ? script.get(i.line) : null);
+
   const visible = () => {
     const q = lib.search.toLowerCase();
     const inScope = (i) => (lib.scope === 'all' ? true : lib.scope === 'fav' ? i.fav : lib.scope === 'music' || lib.scope === 'sound' ? i.kind === lib.scope : i.folder === lib.scope);
     const text = (i) => [i.title, i.artist, i.source, i.license, i.notes, ...i.tags].join(' ').toLowerCase();
-    const value = (i) => (Array.isArray(i[lib.sort]) ? i[lib.sort].join() : i[lib.sort] ?? '');
+    const value = (i) => (lib.sort === 'line' ? lineOf(i)?.n ?? null : Array.isArray(i[lib.sort]) ? i[lib.sort].join() : i[lib.sort] ?? '');
     return L.items.filter((i) => inScope(i) && text(i).includes(q)).sort((a, b) => {
       const [x, y] = [value(a), value(b)];
-      return lib.dir * (typeof x === 'number' && typeof y === 'number' ? x - y : String(x).localeCompare(String(y), undefined, { numeric: true }));
+      if (x === null || y === null) return (x === null) - (y === null) || (b.addedAt || 0) - (a.addedAt || 0); // takes without a line go last
+      const diff = lib.dir * (typeof x === 'number' && typeof y === 'number' ? x - y : String(x).localeCompare(String(y), undefined, { numeric: true }));
+      return diff || (a.addedAt || 0) - (b.addedAt || 0); // several takes of one line: oldest first
     });
   };
+  const added = (t) => (t ? new Date(t).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '');
 
   function redraw() { drawSide(); drawTable(); drawDetail(); }
 
@@ -179,7 +192,7 @@ VIEW.library = (root) => {
     const items = visible();
     count.textContent = `${items.length} shown`;
     const col = (key, label, cls = '') => h('button', { type: 'button', class: `th ${cls} ${lib.sort === key ? 'sorted' : ''}`, onclick: () => { lib.dir = lib.sort === key ? -lib.dir : 1; lib.sort = key; drawTable(); } }, label + (lib.sort === key ? (lib.dir > 0 ? ' ↑' : ' ↓') : ''));
-    const head = h('div', { class: 'lib-row head' }, h('span', {}), h('span', {}), col('title', 'Title'), col('artist', 'Artist'), col('kind', 'Type'), col('folder', 'Folder'), col('tags', 'Tags'), col('duration', 'Length'), col('source', 'Source'));
+    const head = h('div', { class: 'lib-row head' }, h('span', {}), h('span', {}), col('title', 'Title'), col('line', 'Line in script'), col('artist', 'Artist'), col('kind', 'Type'), col('folder', 'Folder'), col('tags', 'Tags'), col('duration', 'Length'), col('addedAt', 'Added'), col('source', 'Source'));
     let anchor = null;
     const rows = items.map((item, index) => {
       const row = h('div', { class: `lib-row ${lib.picked.has(item.id) ? 'picked' : ''} ${nowPlaying === item ? 'playing' : ''}`, 'data-id': item.id, draggable: true,
@@ -199,8 +212,8 @@ VIEW.library = (root) => {
         } },
       h('button', { class: 'row-play', type: 'button', title: 'Play', 'aria-label': `Play ${item.title}`, onclick: (e) => { e.stopPropagation(); playItem(item); } }, '▶'),
       h('button', { class: `star ${item.fav ? 'on' : ''}`, type: 'button', title: 'Favorite', 'aria-label': 'Favorite', onclick: (e) => { e.stopPropagation(); item.fav = !item.fav; touch(); e.target.classList.toggle('on', item.fav); drawSide(); } }, '★'),
-      h('span', { class: 'ellipsis strong' }, item.title), h('span', { class: 'ellipsis' }, item.artist), h('span', {}, item.kind === 'music' ? 'Music' : item.kind === 'sound' ? 'Sound' : ''),
-      h('span', { class: 'ellipsis' }, item.folder), h('span', { class: 'ellipsis' }, item.tags.join(', ')), h('span', {}, clock(item.duration)), h('span', { class: 'ellipsis' }, item.source));
+      h('span', { class: 'ellipsis strong' }, item.title), h('span', { class: 'ellipsis muted', title: lineOf(item)?.label || '' }, lineOf(item)?.label || ''), h('span', { class: 'ellipsis' }, item.artist), h('span', {}, item.kind === 'music' ? 'Music' : item.kind === 'sound' ? 'Sound' : ''),
+      h('span', { class: 'ellipsis' }, item.folder), h('span', { class: 'ellipsis' }, item.tags.join(', ')), h('span', {}, clock(item.duration)), h('span', { class: 'ellipsis muted' }, added(item.addedAt)), h('span', { class: 'ellipsis' }, item.source));
       return row;
     });
     table.replaceChildren(head, ...(items.length ? rows : [h('div', { class: 'empty-state small' }, h('p', {}, L.items.length ? 'Nothing matches.' : 'Drop audio files here, or use Find Sounds to get some.'))]));
