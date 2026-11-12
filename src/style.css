@@ -504,3 +504,9 @@ body[data-paper="dark"] { --paper-ink: #e9e6df; }
 .lib-table { min-width: 1060px; }
 .lib-row { grid-template-columns: 30px 26px minmax(150px, 2fr) minmax(130px, 1.6fr) minmax(70px, .9fr) 58px minmax(70px, .9fr) minmax(70px, .9fr) 54px 108px minmax(70px, 1fr); }
 
+
+.where-row { margin-top: 6px; }
+.where-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.where-text.typing { color: #7fcf8f; }
+.where-row .btn { padding: 2px 10px; font-size: 12px; }
+

@@ -206,5 +206,5 @@ function showRecordAsk(ask) {
     btn('Open', () => { setAsk(ask); note.remove(); go('record'); }, 'primary'),
     btn('Later', () => note.remove()));
   $('#toasts').append(note);
-  notify(`${ask.from} asks you to record`, `${ask.lines.length} line${ask.lines.length > 1 ? 's' : ''}: ${takeName(ask.lines[0])}`, () => { setAsk(ask); note.remove(); go('record'); });
+  notify(`${ask.from} asks you to record`, `${ask.lines.length} line${ask.lines.length > 1 ? 's' : ''}: ${takeName(ask.lines[0])}`, () => { setAsk(ask); note.remove(); go('record'); }, 'ask');
 }

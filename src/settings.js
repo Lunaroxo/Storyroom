@@ -6,7 +6,7 @@ const SETTINGS_DEFAULTS = {
   backupEvery: '2', backupKeepDays: '2',
   addFolder: '', disabledSources: [],
   recFolder: 'Voice Takes', recBits: '24', micDevice: '', outputDevice: '',
-  notify: true, notifySound: true, knownGuests: {},
+  notify: true, notifySound: true, activitySound: 'ding', askSound: 'alert', knownGuests: {},
   autoUpdate: true,
   myName: '', askJoin: true, guestDefault: 'view', turnUrl: '', turnUser: '', turnPass: '', backupLink: true,
   customTheme: null, // set from a preset the first time Custom is picked
@@ -129,11 +129,20 @@ async function playTestSound(notes = [523.25, 659.25, 783.99]) {
 // Something needs attention: a Windows notification with its sound when Storyroom is in the
 // background (clicking it opens the right place), or a chime when Storyroom is in front.
 const notifyActions = new Map();
-function notify(title, body, action) {
+// Storyroom plays its own sound (so each kind can sound different); the Windows popup stays silent.
+const NOTIFY_SOUNDS = {
+  ding: { label: 'Soft ding', notes: [880, 1174.66] },
+  chime: { label: 'Chime', notes: [523.25, 659.25, 783.99] },
+  bell: { label: 'Bell', notes: [1318.51, 987.77, 1318.51] },
+  alert: { label: 'Wake-up call', notes: [659.25, 783.99, 1046.5, 783.99, 1046.5, 1318.51] },
+  pop: { label: 'Pop', notes: [1567.98] },
+};
+function notify(title, body, action, kind = 'activity') {
   const tag = action ? uid() : '';
   if (action) notifyActions.set(tag, action);
-  if (!document.hasFocus() && settings.notify) api['notify:show']({ title, body, tag, silent: !settings.notifySound });
-  else if (settings.notifySound) playTestSound([880, 1174.66]).catch(() => {});
+  if (!document.hasFocus() && settings.notify) api['notify:show']({ title, body, tag, silent: true });
+  const sound = NOTIFY_SOUNDS[kind === 'ask' ? settings.askSound : settings.activitySound];
+  if (settings.notifySound && sound) playTestSound(sound.notes).catch(() => {});
 }
 function notifyClicked(tag) {
   notifyActions.get(tag)?.();
@@ -215,7 +224,10 @@ VIEW.settings = (root) => {
     Notifications: () => [
       h('p', { class: 'muted' }, 'For people asking to join, takes arriving from people or your phone, requests to record lines, and updates.'),
       row('Windows notifications', 'Pop up in the corner of the screen when Storyroom is in the background. Click one to jump there.', tog('notify')),
-      row('Sound', 'Windows plays its notification sound, and Storyroom chimes when it is in front.', tog('notifySound')),
+      row('Sounds', 'Played on your chosen speakers, whether Storyroom is in front or not.', tog('notifySound')),
+      ...[['activitySound', 'Activity sound', 'Someone joins or leaves, a take arrives, an update is ready.'], ['askSound', 'Record request sound', 'Someone asks you to record your lines.']].map(([key, label, help]) => row(label, help, h('div', { class: 'row' },
+        select([...Object.entries(NOTIFY_SOUNDS).map(([id, s]) => [id, s.label]), ['none', 'No sound']], settings[key], (v) => { setSetting(key, v); if (NOTIFY_SOUNDS[v]) playTestSound(NOTIFY_SOUNDS[v].notes); }, { 'aria-label': label }),
+        btn('Play', () => { if (NOTIFY_SOUNDS[settings[key]]) playTestSound(NOTIFY_SOUNDS[settings[key]].notes); })))),
       row('Try it', 'Sends a test in 3 seconds, so you can switch to another window first.', btn('Send a test', () => { toast('Test coming in 3 seconds...'); setTimeout(() => notify('Storyroom', 'This is how notifications look and sound.', () => go('settings')), 3000); }, 'primary')),
     ],
     Updates: () => [

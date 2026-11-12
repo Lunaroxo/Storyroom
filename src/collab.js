@@ -824,15 +824,17 @@ function followGuest(g) {
   go(w.view);
 }
 
+const whereText = (g) => (g.where?.label ? `Now in ${g.where.label}${g.doc ? ' (typing)' : ''}` : 'Just joined');
+
+// Where each person is: shown on their card in Settings > Collaboration (updated in place, so
+// the permission controls there are not redrawn), plus dots on the parts and pages they have open.
 function drawPresence() {
-  let bar = $('#presence');
   const people = collab.role === 'host' ? [...collab.guests.values()] : [];
-  if (!people.length) bar?.remove();
-  else {
-    if (!bar) { bar = h('div', { id: 'presence', 'aria-label': 'Who is where' }); document.body.append(bar); }
-    bar.replaceChildren(...people.map((g) => h('button', { type: 'button', class: 'presence-chip', title: 'Go to where they are', onclick: () => followGuest(g) },
-      h('i', { style: `background:${presenceColor(g.clientId)}` }), h('b', {}, g.name),
-      h('span', {}, g.where?.label || 'Just joined'), g.doc && h('em', {}, 'typing'))));
+  for (const g of people) {
+    document.querySelectorAll(`[data-where-of="${CSS.escape(g.clientId)}"]`).forEach((el) => {
+      if (el.textContent !== whereText(g)) el.textContent = whereText(g);
+      el.classList.toggle('typing', !!g.doc);
+    });
   }
   // Dots on the parts and pages people have open. Only changed rows are touched, so this cannot loop.
   const at = new Map();
@@ -885,7 +887,10 @@ function permsEditor(g) {
       btn('Remove', () => removeGuest(g), 'danger-text'))),
     h('label', { class: 'row tight delete-perm' }, h('input', { type: 'checkbox', class: 'switch', checked: !!g.perms.canDelete, onchange: (e) => { g.perms.canDelete = e.target.checked; setGuestPerms(g, g.perms); } }),
       h('span', {}, 'Can delete whole episodes, pages, panels and tasks'), h('span', { class: 'muted' }, '(off keeps your work safe: they can still edit what you allow)')),
-    h('div', { class: 'muted' }, g.where?.label ? `Now in ${g.where.label}${g.doc ? ' (typing)' : ''}` : 'Just joined'),
+    h('div', { class: 'row where-row' },
+      h('i', { class: 'where-dot', style: `background:${presenceColor(g.clientId)}` }),
+      h('span', { class: `muted where-text ${g.doc ? 'typing' : ''}`, 'data-where-of': g.clientId }, whereText(g)),
+      btn('Go there', () => followGuest(g))),
     custom);
 }
 
