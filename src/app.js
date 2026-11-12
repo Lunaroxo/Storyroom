@@ -24,11 +24,17 @@ const btn = (label, onclick, cls = '', title = '') => h('button', { class: `btn 
 const url = (rel) => rel.split('/').map(encodeURIComponent).join('/');
 
 // An input or textarea whose value lives in obj[key].
-const bind = (obj, key, props = {}, tag = 'input') => h(tag, {
-  ...props,
-  value: obj[key] ?? '',
-  oninput(e) { obj[key] = e.target.value; touch(); props.oninput?.(e); },
-});
+// Remembers which value each field shows, so live edits from others can update it in place.
+const bindings = new WeakMap();
+const bind = (obj, key, props = {}, tag = 'input') => {
+  const el = h(tag, {
+    ...props,
+    value: obj[key] ?? '',
+    oninput(e) { obj[key] = e.target.value; touch(); props.oninput?.(e); },
+  });
+  bindings.set(el, { obj, key });
+  return el;
+};
 
 function select(options, value, onchange, props = {}) {
   return h('select', { ...props, value, onchange: (e) => onchange(e.target.value) },

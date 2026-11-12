@@ -125,15 +125,16 @@ function visibleState(perms) {
 // --- Local changes out, remote changes in ------------------------------------------------------
 function collabChanged() {
   if (!collab.role || !collab.snapshot) return;
-  clearTimeout(collab.timer);
+  if (collab.timer) return; // sends every 200 ms while someone types, instead of waiting for a pause
   collab.timer = setTimeout(() => {
+    collab.timer = 0;
     commitEditors();
     const ops = diff(collab.snapshot, S);
     collab.snapshot = structuredClone(S);
     if (!ops.length) return;
     if (collab.role === 'host') relay(ops, null);
     else collab.host?.send({ t: 'ops', ops });
-  }, 250);
+  }, 200);
 }
 
 function relay(ops, except) {
@@ -149,7 +150,40 @@ function applyRemote(ops) {
   applyOps(S, ops);
   applyOps(collab.snapshot, ops);
   if (collab.role === 'host') touch();
-  rerenderSoon();
+  liveRefresh(ops);
+}
+
+// Long text that others are only typing into (scripts, descriptions, notes) never needs a redraw.
+const TEXT_KEYS = new Set(['html', 'bible', 'notes', 'action', 'dialogue', 'logline', 'v', 'text', 'secs']);
+
+// Shows what others type right away: writing boxes and fields on screen are updated in place.
+// Only changes to lists and layout (new pages, moved parts) redraw the section.
+function liveRefresh(ops) {
+  const shown = new Map(); // object -> key -> elements showing it
+  const add = (obj, key, el) => {
+    if (!shown.has(obj)) shown.set(obj, new Map());
+    const keys = shown.get(obj);
+    if (!keys.has(key)) keys.set(key, []);
+    keys.get(key).push(el);
+  };
+  for (const e of live) if (e.el.isConnected) add(e.obj, e.key, e.el);
+  document.querySelectorAll('#main input, #main textarea').forEach((el) => { const b = bindings.get(el); if (b) add(b.obj, b.key, el); });
+  let redraw = false;
+  for (const op of ops) {
+    const key = op.p.at(-1);
+    if (!('v' in op) || typeof key !== 'string') { redraw = true; continue; }
+    const els = shown.get(resolve(S, op.p.slice(0, -1)))?.get(key);
+    if (!els) { if (!TEXT_KEYS.has(key)) redraw = true; continue; }
+    for (const el of els) {
+      if (el === document.activeElement) continue; // never touch the box this person is typing in
+      if (el.classList.contains('rte')) {
+        const html = op.v || '<p><br></p>';
+        if (el.innerHTML !== html) el.innerHTML = html;
+        el.classList.toggle('empty', !el.textContent.trim() && !el.querySelector('img,table,hr'));
+      } else if (el.value !== String(op.v ?? '')) el.value = op.v ?? '';
+    }
+  }
+  if (redraw) rerenderSoon();
 }
 
 function rerenderSoon() {

@@ -249,10 +249,12 @@ function makeEditor(obj, key, { onInput, placeholder, tall } = {}) {
   const ed = h('div', { class: 'rte', contentEditable: 'true', spellcheck: settings.spellcheck, role: 'textbox', 'aria-multiline': 'true', 'data-placeholder': placeholder || '', 'data-doc': `${obj.id || 'show'}:${key}` });
   // Tells people writing together which document this person is in.
   ed.addEventListener('focus', () => collabFocus(ed.dataset.doc));
-  ed.addEventListener('blur', () => collabFocus(null));
+  // Switching to another app (alt-tab) keeps your place; only leaving the box inside Storyroom frees it.
+  ed.addEventListener('blur', () => { if (document.hasFocus()) collabFocus(null); });
   ed.innerHTML = obj[key] || '<p><br></p>';
-  const commit = () => { if (obj[key] !== ed.innerHTML) obj[key] = ed.innerHTML; };
-  live.push({ el: ed, commit });
+  // A read-only editor (someone else is writing in it) never saves: its screen may lag their latest words.
+  const commit = () => { if (ed.isContentEditable && obj[key] !== ed.innerHTML) obj[key] = ed.innerHTML; };
+  live.push({ el: ed, commit, obj, key });
   document.execCommand('defaultParagraphSeparator', false, 'p');
 
   ed.addEventListener('input', () => {
