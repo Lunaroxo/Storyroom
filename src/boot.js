@@ -34,6 +34,7 @@ function upgrade(project) {
   api.onTunnel(tunnelOpened, tunnelData, tunnelClosed);
   api.onPhoneTake(phoneTakeArrived);
   api.onNotifyClick(notifyClicked);
+  restoreTakes();
   applySettings();
   try {
     const left = sessionStorage.getItem('afterLeave');

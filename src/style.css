@@ -486,3 +486,6 @@ body[data-paper="dark"] { --paper-ink: #e9e6df; }
 #phoneBtn .live-dot { fill: #7fcf8f; display: none; }
 #phoneBtn.live { color: #7fcf8f; }
 #phoneBtn.live .live-dot { display: inline; }
+
+.device-row { padding: 6px 0; border-bottom: 1px solid var(--line); }
+

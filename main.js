@@ -230,6 +230,7 @@ function streamUrl(url) {
 // https://*.trycloudflare.com address. Both sides only make normal outgoing connections.
 // The same link also serves the phone page (see phoneRoute). It stays up while either uses it.
 const cfBin = () => path.join(app.getPath('userData'), 'bin', 'cloudflared.exe');
+const takesDir = () => path.join(app.getPath('userData'), 'unsaved-takes');
 let tunnel = null;
 let tunnelStarting = null;
 const tunnelUsers = new Set(); // 'collab' and/or 'phone'
@@ -258,23 +259,51 @@ async function openTunnel() {
     ws.on('close', () => { clients.delete(id); send('tunnel:close', id); });
     ws.on('error', () => ws.terminate());
   });
-  const proc = spawn(cfBin(), ['tunnel', '--no-autoupdate', '--url', `http://127.0.0.1:${server.address().port}`], { windowsHide: true });
-  tunnel = { server, wss, proc, clients, url: null };
-  try {
-    tunnel.url = await new Promise((resolve, reject) => {
-      let log = '';
-      const look = (chunk) => { log += chunk; const m = log.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/); if (m) resolve(m[0]); };
-      proc.stdout.on('data', look);
-      proc.stderr.on('data', look);
-      proc.on('error', reject);
-      proc.on('exit', () => reject(new Error('The backup link stopped.')));
-      setTimeout(() => reject(new Error('The backup link did not start in time.')), 40000);
-    });
-  } catch (err) {
-    stopTunnel(null);
-    throw err;
+  tunnel = { server, wss, proc: null, clients, url: null };
+  // Creating a quick tunnel sometimes fails on Cloudflare's side, so try a few times.
+  let lastError = null;
+  for (let attempt = 1; attempt <= 3 && tunnel; attempt++) {
+    try {
+      tunnel.url = await runCloudflared(server.address().port);
+      return tunnel.url;
+    } catch (err) {
+      lastError = err;
+      tunnel?.proc?.kill();
+      if (attempt < 3) await new Promise((r) => setTimeout(r, 4000));
+    }
   }
-  return tunnel.url;
+  stopTunnel(null);
+  throw lastError || new Error('The link was turned off.');
+}
+
+// Starts cloudflared and waits until its tunnel is connected. Its whole output goes to link-log.txt.
+function runCloudflared(port) {
+  const proc = spawn(cfBin(), ['tunnel', '--no-autoupdate', '--url', `http://127.0.0.1:${port}`], { windowsHide: true });
+  tunnel.proc = proc;
+  const logFile = path.join(app.getPath('userData'), 'link-log.txt');
+  fs.writeFileSync(logFile, `--- ${new Date().toISOString()}\n`);
+  return new Promise((resolve, reject) => {
+    let log = '';
+    let address = null;
+    let lastErr = '';
+    const done = (fn, value) => { clearTimeout(timer); clearTimeout(grace); fn(value); };
+    const look = (chunk) => {
+      const text = String(chunk);
+      log += text;
+      fs.appendFile(logFile, text, () => {});
+      for (const line of text.split('\n')) if (/\bERR\b/.test(line)) lastErr = line.replace(/^.*?\bERR\b\s*/, '').trim();
+      // The tunnel's own address, never api.trycloudflare.com (which cloudflared prints when creating fails).
+      address ||= log.match(/https:\/\/(?!api\.)[a-z0-9-]+\.trycloudflare\.com/)?.[0] || null;
+      if (address && /Registered tunnel connection/i.test(log)) done(resolve, address);
+    };
+    proc.stdout.on('data', look);
+    proc.stderr.on('data', look);
+    proc.on('error', (err) => done(reject, new Error(`Could not run the link tool: ${err.message}`)));
+    proc.on('exit', () => done(reject, new Error(lastErr ? `Cloudflare said: ${lastErr}` : 'The link tool stopped.')));
+    // An address usually connects within seconds; if the "connected" line never shows, use it anyway after a while.
+    const grace = setTimeout(() => { if (address) done(resolve, address); }, 20000);
+    const timer = setTimeout(() => done(reject, new Error(lastErr ? `Cloudflare said: ${lastErr}` : 'The link did not start in time. Check your internet connection.')), 45000);
+  });
 }
 
 // Stops one user's use of the link; it closes when nobody needs it (null closes it outright).
@@ -282,7 +311,7 @@ function stopTunnel(user) {
   if (user) tunnelUsers.delete(user); else tunnelUsers.clear();
   if (user === 'phone') { phone.key = null; stopAwake(); }
   if (tunnelUsers.size || !tunnel) return;
-  tunnel.proc.kill();
+  tunnel.proc?.kill();
   for (const ws of tunnel.clients.values()) ws.terminate();
   tunnel.wss.close();
   tunnel.server.close();
@@ -494,7 +523,24 @@ const handlers = {
     if (every !== cfg.backupEvery) restartBackups();
   },
   'app:version': () => app.getVersion(),
-  'app:openFolder': (_e, which) => shell.openPath(which === 'backups' ? backupsDir() : root),
+  'app:openFolder': (_e, which) => shell.openPath(which === 'backups' ? backupsDir() : which === 'linklog' ? path.join(app.getPath('userData'), 'link-log.txt') : root),
+  // Takes not saved yet are kept on disk, so a dropped session, crash or restart never loses them.
+  'takes:keep': (_e, meta, wav) => {
+    if (!/^[a-z0-9]+$/.test(meta?.id || '')) return;
+    fs.mkdirSync(takesDir(), { recursive: true });
+    fs.writeFileSync(path.join(takesDir(), `${meta.id}.wav`), Buffer.from(wav));
+    fs.writeFileSync(path.join(takesDir(), `${meta.id}.json`), JSON.stringify(meta));
+  },
+  'takes:all': () => (fs.existsSync(takesDir()) ? fs.readdirSync(takesDir()).filter((n) => n.endsWith('.json')).flatMap((n) => {
+    try {
+      const meta = JSON.parse(fs.readFileSync(path.join(takesDir(), n), 'utf8'));
+      return [{ meta, wav: fs.readFileSync(path.join(takesDir(), `${meta.id}.wav`)) }];
+    } catch { return []; }
+  }) : []),
+  'takes:drop': (_e, id) => {
+    if (!/^[a-z0-9]+$/.test(id || '')) return;
+    for (const ext of ['.wav', '.json']) fs.rmSync(path.join(takesDir(), id + ext), { force: true });
+  },
   'update:check': async () => {
     if (!app.isPackaged) return 'Updates only work in the installed app.';
     const result = await autoUpdater.checkForUpdates().catch(() => null);

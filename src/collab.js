@@ -9,7 +9,8 @@
 const PEER_PREFIX = 'storyroom-';
 const SECTION_LIST = [['show', 'Show'], ['writing', 'Writing'], ['characters', 'Characters'], ['world', 'World'], ['storyboard', 'Storyboard'], ['library', 'Library & sounds'], ['todo', 'To Do'], ['production', 'Production']];
 const collab = {
-  role: null, peer: null, code: '', guests: new Map(), known: new Map(), banned: new Set(), host: null, hostName: '', perms: null,
+  // Each device (not name) that was let in keeps its permissions, even after Storyroom restarts.
+  role: null, peer: null, code: '', guests: new Map(), known: new Map(Object.entries(settings.knownGuests || {}).map(([id, v]) => [id, v.perms])), banned: new Set(), host: null, hostName: '', perms: null,
   locks: [], myDoc: null, snapshot: null, timer: 0, pendingRender: false,
   clientId: (() => { try { return localStorage.getItem('clientId') || (localStorage.setItem('clientId', uid() + uid()), localStorage.getItem('clientId')); } catch { return uid() + uid(); } })(),
 };
@@ -395,6 +396,7 @@ async function admit(conn) {
   }
   const g = { conn, name: who, clientId, perms: collab.known.get(clientId) || presetPerms(settings.guestDefault), doc: null };
   collab.known.set(clientId, g.perms);
+  rememberDevice(g);
   api['backup:now'](); // a restore point from before this person changed anything
   collab.guests.get(clientId)?.conn.close();
   collab.guests.set(clientId, g);
@@ -447,9 +449,38 @@ async function onGuestData(g, d) {
   }
 }
 
+function rememberDevice(g) {
+  setSetting('knownGuests', { ...(settings.knownGuests || {}), [g.clientId]: { name: g.name, perms: g.perms, seen: Date.now() } });
+}
+
+function forgetDevice(clientId) {
+  const next = { ...(settings.knownGuests || {}) };
+  delete next[clientId];
+  collab.known.delete(clientId);
+  setSetting('knownGuests', next);
+  refreshCollabUI();
+}
+
+// Devices let in before: they come back with the same permissions, without asking again.
+function rememberedDevices() {
+  const away = Object.entries(settings.knownGuests || {}).filter(([id]) => !collab.guests.has(id));
+  if (!away.length) return null;
+  return h('div', {},
+    h('h3', { class: 'set-sub' }, 'Remembered devices'),
+    h('p', { class: 'muted' }, 'When one of these reconnects, it gets back in straight away with the same permissions. Forget a device to make it ask again.'),
+    away.map(([id, d]) => h('div', { class: 'row between device-row' },
+      h('span', {}, h('b', {}, d.name), h('span', { class: 'muted' }, ` last here ${new Date(d.seen).toLocaleString()}`)),
+      btn('Forget', () => forgetDevice(id), 'danger-text'))));
+}
+
+function lastSession() {
+  try { return JSON.parse(localStorage.getItem('lastSession') || 'null'); } catch { return null; }
+}
+
 function setGuestPerms(g, perms) {
   g.perms = perms;
   collab.known.set(g.clientId, perms);
+  rememberDevice(g);
   sendState(g);
 }
 
@@ -492,6 +523,7 @@ function joinFailed(text) {
 async function joinSession(rawCode) {
   const code = rawCode.trim().toUpperCase();
   if (!/^[A-Z0-9]{6}$/.test(code)) return toast('Codes are 6 letters and numbers', true);
+  collab.joinCode = code;
   if (!settings.myName) return toast('Type your name first', true);
   saveNow();
   await api['backup:now'](); // your own show gets a restore point before you visit someone else's
@@ -594,6 +626,7 @@ async function onHostData(conn, d) {
       $('base').href = rootUrl;
       collab.role = 'guest';
       toast(`Joined ${d.host}'s show`);
+      try { localStorage.setItem('lastSession', JSON.stringify({ code: collab.joinCode, host: d.host })); } catch { /* no Rejoin button */ }
     }
     collab.host = conn;
     S = upgrade(d.state);
@@ -610,6 +643,7 @@ async function onHostData(conn, d) {
   else if (d.t === 'takeSaved') {
     const take = rec.takes.find((t) => t.id === d.id);
     if (take) take.saved = d.ok ? true : false;
+    if (take && d.ok) forgetTake(take); // safely on the host now
     toast(d.ok ? `Take sent to ${collab.hostName}'s library` : 'The host could not save that take.', !d.ok);
     rec.redraw?.();
   }
@@ -644,6 +678,7 @@ function applyGuestRail() {
     if (b.dataset.view === 'record') b.classList.remove('off'); // anyone in a session can record and send takes
   });
   $('#livePill')?.classList.toggle('off', !collab.role);
+  $('#phoneBtn')?.classList.toggle('off', collab.role === 'guest'); // the phone link serves your own show, not one you are visiting
   if ($('#livePill')) $('#livePill').textContent = collab.role === 'host' ? `Live: ${collab.guests.size}` : collab.role === 'guest' ? 'Joined' : '';
 }
 
@@ -721,7 +756,8 @@ function collabPanel() {
         h('div', { class: 'code' }, collab.code), h('div', { class: 'row' }, btn('Copy code', copy, 'primary'), btn('Stop sharing', async () => { if (await dialogBox({ title: 'Stop sharing?', text: 'Everyone in the session is disconnected.', okText: 'Stop', danger: true })) stopHosting(); }, 'danger-text'))),
       h('div', { class: 'set-row' }, h('div', { class: 'set-text' }, h('div', { class: 'set-label' }, 'Backup link for blocked networks'),
         h('div', { class: `muted ${String(collab.linkState).startsWith('failed') ? 'link-failed' : ''}` }, collab.linkState === 'ready' ? 'Ready. Friends whose network blocks direct links are connected through it automatically (Cloudflare Quick Tunnel).'
-          : collab.linkState === 'starting' ? 'Starting...' : String(collab.linkState || '').startsWith('failed') ? `Could not start: ${collab.linkState.slice(8)}` : 'Off. Friends on strict networks will not be able to join.')),
+          : collab.linkState === 'starting' ? 'Starting...' : String(collab.linkState || '').startsWith('failed') ? `Could not start: ${collab.linkState.slice(8)}` : 'Off. Friends on strict networks will not be able to join.'),
+        String(collab.linkState || '').startsWith('failed') && h('button', { class: 'link', type: 'button', onclick: () => api['app:openFolder']('linklog') }, 'Open the link log')),
         h('input', { type: 'checkbox', class: 'switch', checked: settings.backupLink, 'aria-label': 'Backup link', onchange: (e) => {
           setSetting('backupLink', e.target.checked);
           if (e.target.checked) startBackupLink();
@@ -729,6 +765,7 @@ function collabPanel() {
         } })),
       h('div', { class: 'set-row' }, h('div', { class: 'set-text' }, h('div', { class: 'set-label' }, 'Ask before someone joins'), h('div', { class: 'muted' }, 'Recommended. Anyone with the code can ask.')), h('input', { type: 'checkbox', class: 'switch', checked: settings.askJoin, onchange: (e) => setSetting('askJoin', e.target.checked) })),
       h('div', { class: 'set-row' }, h('div', { class: 'set-text' }, h('div', { class: 'set-label' }, 'New people start with'), h('div', { class: 'muted' }, 'You can change each person below.')), select([['view', 'View only'], ['edit', 'Can edit everything']], settings.guestDefault, (v) => setSetting('guestDefault', v))),
+      rememberedDevices(),
       h('h3', { class: 'set-sub' }, `People here (${collab.guests.size})`),
       collab.guests.size ? [...collab.guests.values()].map(permsEditor) : h('p', { class: 'muted' }, 'Nobody yet. Send them the code.'),
       h('p', { class: 'muted' }, 'A backup is made when you start sharing and each time someone joins. Settings > Saving & backups > Open backups goes back to any of them.'),
@@ -746,6 +783,7 @@ function collabPanel() {
     h('div', { class: 'collab-cards' },
       h('div', { class: 'code-box' }, h('div', { class: 'set-label' }, 'Host this show'), h('div', { class: 'muted' }, 'Get a code to send. You choose what each person can see and edit.'), btn('Start sharing', startHosting, 'primary')),
       h('div', { class: 'code-box' }, h('div', { class: 'set-label' }, 'Join someone'), h('div', { class: 'muted' }, 'Type the code they sent you. Your own show is backed up first and is never changed while you visit.'), h('div', { class: 'row' }, codeIn, btn('Join', () => joinSession(codeIn.value), 'primary')),
+        lastSession() && btn(`Rejoin ${lastSession().host}'s session (${lastSession().code})`, () => joinSession(lastSession().code)),
         collab.joinState && h('div', { class: `join-state ${collab.joinState.failed ? 'failed' : 'busy'}` }, collab.joinState.text))),
     h('p', { class: 'muted' }, 'Connections go straight between PCs and are encrypted. A free public server (PeerJS) only matches up the code.'),
     connectionTools());
@@ -831,7 +869,8 @@ function phonePanel() {
       h('p', { class: 'muted' }, 'Turns this PC into a private website your phone can open, even at school or a friend\'s house. On the phone: pick a part, tap a line, record (raw, no filters) and save. Takes come straight here.'),
       phoneLink.state === 'starting' ? h('p', {}, 'Starting the link...')
         : btn('Turn on phone link', startPhoneLink, 'primary'),
-      String(phoneLink.state || '').startsWith('failed') && h('p', { class: 'link-failed' }, `Could not start: ${phoneLink.state.slice(8)}`))));
+      String(phoneLink.state || '').startsWith('failed') && [h('p', { class: 'link-failed' }, `Could not start: ${phoneLink.state.slice(8)}`),
+        h('button', { class: 'link', type: 'button', onclick: () => api['app:openFolder']('linklog') }, 'Open the link log (send it to me if this keeps happening)')])));
 }
 
 // Recording is never read-only: it only sends takes, and the host saves them into its own Voice Takes.

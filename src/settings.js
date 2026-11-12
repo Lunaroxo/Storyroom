@@ -6,7 +6,7 @@ const SETTINGS_DEFAULTS = {
   backupEvery: '2', backupKeepDays: '2',
   addFolder: '', disabledSources: [],
   recFolder: 'Voice Takes', recBits: '24', micDevice: '', outputDevice: '',
-  notify: true, notifySound: true,
+  notify: true, notifySound: true, knownGuests: {},
   autoUpdate: true,
   myName: '', askJoin: true, guestDefault: 'view', turnUrl: '', turnUser: '', turnPass: '', backupLink: true,
   customTheme: null, // set from a preset the first time Custom is picked

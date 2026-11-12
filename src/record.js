@@ -6,6 +6,24 @@ const rec = { takes: [], live: null, count: 0, part: '', line: null, ask: null }
 
 const takesFor = (key) => S.library.items.filter((i) => i.line === key).length;
 
+// Unsaved takes are also kept on disk until saved, sent or deleted (see takes:keep in main.js).
+const takeMeta = (t) => ({ id: t.id, name: t.name, line: t.line, secs: t.secs, peak: t.peak, rate: t.rate, channels: t.channels });
+const forgetTake = (t) => api['takes:drop'](t.id);
+async function restoreTakes() {
+  try { rec.ask = JSON.parse(localStorage.getItem('recAsk') || 'null'); } catch { rec.ask = null; }
+  const kept = await api['takes:all']();
+  for (const { meta, wav } of kept) {
+    const buf = wav.buffer.slice(wav.byteOffset, wav.byteOffset + wav.byteLength);
+    rec.takes.push({ ...meta, wav: buf, url: URL.createObjectURL(new Blob([buf], { type: 'audio/wav' })), saved: false });
+  }
+  rec.count = rec.takes.length;
+  if (kept.length) toast(`${kept.length} unsaved take${kept.length > 1 ? 's were' : ' was'} kept from last time. They are in Recording.`);
+}
+const setAsk = (ask) => {
+  rec.ask = ask;
+  try { ask ? localStorage.setItem('recAsk', JSON.stringify(ask)) : localStorage.removeItem('recAsk'); } catch { /* only for this run */ }
+};
+
 function saveTakeDialog(take) {
   return new Promise((resolve) => {
     const L = S.library;
@@ -39,6 +57,7 @@ async function keepTake(take, name, folder) {
   addToLibrary([{ ...info, source: 'Recorded', line: take.line?.key || '' }], { kind: 'sound', folder });
   refreshLibTitles();
   take.saved = true;
+  forgetTake(take);
   toast(`Saved "${name}" to ${folder || 'Library'}`);
 }
 
@@ -75,7 +94,9 @@ VIEW.record = (root) => {
       rec.live = null;
       rec.count++;
       const line = rec.line;
-      rec.takes.unshift({ ...result, id: uid(), line, name: line ? takeName(line) : `Take ${rec.count}`, url: URL.createObjectURL(new Blob([result.wav], { type: 'audio/wav' })), saved: false });
+      const take = { ...result, id: uid(), line, name: line ? takeName(line) : `Take ${rec.count}`, url: URL.createObjectURL(new Blob([result.wav], { type: 'audio/wav' })), saved: false };
+      rec.takes.unshift(take);
+      api['takes:keep'](takeMeta(take), take.wav);
       meter.firstChild.style.width = '0%';
       draw();
       return;
@@ -104,7 +125,7 @@ VIEW.record = (root) => {
     const now_ = linesNow();
     const partChoices = S.episodes.flatMap((e) => partOptions(e).map(([id, label]) => [`${e.id}|${id}`, `${e.title}: ${label.trim()}`]));
     scriptHead.replaceChildren(
-      rec.ask ? h('div', { class: 'ask-banner' }, h('b', {}, now_.title), btn('Close', () => { rec.ask = null; drawScript(); }))
+      rec.ask ? h('div', { class: 'ask-banner' }, h('b', {}, now_.title), btn('Close', () => { setAsk(null); drawScript(); }))
         : select([['', 'Pick the script to read...'], ...partChoices], rec.part, (v) => { rec.part = v; rec.line = null; drawScript(); draw(); }, { 'aria-label': 'Script to read', class: 'wide' }),
       collab.role === 'host' && collab.guests.size > 0 && now_.lines.length > 0 && !rec.ask && btn('Ask someone to record', () => askToRecord(now_), 'primary'));
     script.replaceChildren(...(now_.lines.length ? now_.lines.map((line) => {
@@ -136,7 +157,7 @@ VIEW.record = (root) => {
               await keepTake(t, choice.name, choice.folder);
               draw(); drawScript();
             } }, 'Save as...')],
-      h('button', { class: 'x show', type: 'button', title: 'Delete take', onclick: () => { URL.revokeObjectURL(t.url); rec.takes.splice(rec.takes.indexOf(t), 1); draw(); } }, '×')))
+      h('button', { class: 'x show', type: 'button', title: 'Delete take', onclick: () => { URL.revokeObjectURL(t.url); forgetTake(t); rec.takes.splice(rec.takes.indexOf(t), 1); draw(); } }, '×')))
       : [h('div', { class: 'empty-state small' }, h('p', {}, 'Press Record, do a take, press Stop. Keep going until one feels right.'))]));
   }
   rec.redraw = () => { if (ui.view === 'record') { draw(); drawScript(); } };
@@ -181,8 +202,8 @@ async function askToRecord({ title, lines }) {
 // Guest: a request from the host appears as a note with a button that opens the lines.
 function showRecordAsk(ask) {
   const note = h('div', { class: 'toast update' }, `${ask.from} asks you to record ${ask.lines.length} line${ask.lines.length > 1 ? 's' : ''}. `,
-    btn('Open', () => { rec.ask = ask; note.remove(); go('record'); }, 'primary'),
+    btn('Open', () => { setAsk(ask); note.remove(); go('record'); }, 'primary'),
     btn('Later', () => note.remove()));
   $('#toasts').append(note);
-  notify(`${ask.from} asks you to record`, `${ask.lines.length} line${ask.lines.length > 1 ? 's' : ''}: ${takeName(ask.lines[0])}`, () => { rec.ask = ask; note.remove(); go('record'); });
+  notify(`${ask.from} asks you to record`, `${ask.lines.length} line${ask.lines.length > 1 ? 's' : ''}: ${takeName(ask.lines[0])}`, () => { setAsk(ask); note.remove(); go('record'); });
 }
