@@ -489,3 +489,13 @@ body[data-paper="dark"] { --paper-ink: #e9e6df; }
 
 .device-row { padding: 6px 0; border-bottom: 1px solid var(--line); }
 
+
+/* --- Reconnecting and presence --- */
+#reconnectBar { position: fixed; top: 0; left: 50%; transform: translateX(-50%); z-index: 45; background: #e5a04d; color: #1d1508; font-weight: 600; padding: 6px 16px; border-radius: 0 0 10px 10px; box-shadow: 0 3px 12px #0007; animation: breathe 1.8s ease-in-out infinite; }
+#presence { position: fixed; top: 8px; right: 14px; z-index: 12; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; pointer-events: none; }
+.presence-chip { pointer-events: auto; display: flex; align-items: center; gap: 6px; max-width: 380px; background: var(--glass); backdrop-filter: blur(6px); border: 1px solid var(--line); color: var(--text); border-radius: 14px; padding: 4px 10px; font: 12.5px 'Segoe UI', sans-serif; cursor: pointer; box-shadow: 0 2px 10px #0005; }
+.presence-chip:hover { border-color: var(--accent); }
+.presence-chip i { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.presence-chip span { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.presence-chip em { color: #7fcf8f; font-style: normal; font-weight: 600; animation: breathe 1.2s ease-in-out infinite; }
+.pdot { width: 8px; height: 8px; border-radius: 50%; flex: none; margin-left: 4px; box-shadow: 0 0 0 2px var(--panel); }

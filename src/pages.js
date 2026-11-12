@@ -61,7 +61,7 @@ function pagesView(root, { kinds, heading, defaultKind }) {
     const all = pages();
     const row = (p, depth, withVersions) => {
       const versions = withVersions ? versionsOf(p) : [];
-      const el = h('div', { class: `page-row ${p === cur ? 'on' : ''}`, style: `margin-left:${depth * 18}px`, onclick: () => pick(p) },
+      const el = h('div', { class: `page-row ${p === cur ? 'on' : ''}`, style: `margin-left:${depth * 18}px`, 'data-presence-id': p.id, onclick: () => pick(p) },
         h('button', { class: `caret ${versions.length ? '' : 'hide'}`, type: 'button', title: p.open === false ? 'Show versions' : 'Hide versions', onclick: (e) => { e.stopPropagation(); p.open = p.open === false; touch(); drawList(); } }, p.open === false ? '▸' : '▾'),
         p.image ? h('img', { src: url(p.image), alt: '' }) : h('div', { class: 'thumb-blank' }, (p.name[0] || '?').toUpperCase()),
         h('div', { class: 'grow ellipsis' }, p.name || 'Untitled', kinds.length > 1 && h('small', {}, WORLD_KINDS.find(([k]) => k === p.kind)?.[1])),

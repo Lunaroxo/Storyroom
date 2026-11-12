@@ -50,7 +50,7 @@ VIEW.writing = (root) => {
         } }, '×'));
       const partBox = (part, siblings, depth) => {
         const hasKids = part.children.length > 0;
-        const row = h('div', { class: `tree-part ${part === curPart && ep === curEp ? 'on' : ''}`, style: `margin-left:${22 + depth * 16}px`, onclick: () => pick(ep, part) },
+        const row = h('div', { class: `tree-part ${part === curPart && ep === curEp ? 'on' : ''}`, style: `margin-left:${22 + depth * 16}px`, 'data-presence-id': part.id, onclick: () => pick(ep, part) },
           h('button', { class: `caret ${hasKids ? '' : 'hide'}`, type: 'button', title: part.open ? 'Collapse' : 'Expand', onclick: (e) => { e.stopPropagation(); part.open = !part.open; justOpened = part.open ? part : null; touch(); drawTree(); } }, part.open ? '▾' : '▸'),
           h('span', { class: 'grow ellipsis' }, part.title || 'Untitled'),
           h('button', { class: 'x', type: 'button', title: 'Add a child under this', onclick: async (e) => {

@@ -48,6 +48,7 @@ function saveTakeDialog(take) {
 // Saves a take to this show's library, or sends it to the host when visiting someone's show.
 async function keepTake(take, name, folder) {
   if (collab.role === 'guest') {
+    if (!collab.host) return toast('Reconnecting to the host. Send it again in a moment; the take is kept.', true);
     take.saved = 'sending';
     collab.host.send({ t: 'take', id: take.id, name, line: take.line?.key || '', data: take.wav });
     return;

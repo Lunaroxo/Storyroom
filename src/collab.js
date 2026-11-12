@@ -406,10 +406,12 @@ async function admit(conn) {
     if (collab.guests.get(clientId) !== g) return;
     collab.guests.delete(clientId);
     toast(`${who} left`);
+    drawPresence();
     shareLocks();
     refreshCollabUI();
   });
   toast(`${who} joined`);
+  drawPresence();
   notify(`${who} joined`, 'They are writing with you now.', () => { ui.settingsTab = 'Collaboration'; go('settings'); });
   refreshCollabUI();
 }
@@ -419,6 +421,14 @@ function sendState(g) {
 }
 
 async function onGuestData(g, d) {
+  g.lastSeen = Date.now();
+  if (d.t === 'ping') { g.pings = true; return; }
+  if (d.t === 'where') {
+    const text = (v) => (typeof v === 'string' ? v.slice(0, 120) : '');
+    g.where = { view: text(d.view), label: text(d.label), ep: text(d.ep), part: text(d.part), page: text(d.page) };
+    drawPresence();
+    return;
+  }
   if (d.t === 'ops' && Array.isArray(d.ops)) {
     // Deleting whole episodes, pages, panels or tasks needs its own permission (off unless the host turns it on).
     const ok = d.ops.filter((op) => Array.isArray(op?.p) && opLevel(g.perms, op, S) === 'edit' && (!isDeletion(op) || g.perms.canDelete));
@@ -427,6 +437,7 @@ async function onGuestData(g, d) {
   } else if (d.t === 'focus') {
     g.doc = typeof d.doc === 'string' ? d.doc : null;
     shareLocks();
+    drawPresence();
   } else if (d.t === 'getFile' && sharedPath(d.rel)) {
     g.conn.send({ t: 'file', rel: d.rel, data: await api['file:read'](d.rel) });
   } else if (d.t === 'putFile' && sharedPath(d.rel) && JSON.stringify(g.perms).includes('"edit"')) {
@@ -509,6 +520,9 @@ function setJoinState(text, failed) {
   refreshCollabUI();
 }
 
+// True while connecting for the first time, or while getting back in after a drop.
+const joining = () => collab.role !== 'guest' || collab.reconnecting;
+
 function joinFailed(text) {
   clearTimeout(collab.joinTimer);
   clearTimeout(collab.linkTimer);
@@ -516,8 +530,58 @@ function joinFailed(text) {
   collab.linkSocket?.close();
   collab.peer?.destroy();
   collab.peer = null;
+  if (collab.reconnecting) return; // the reconnect loop tries again quietly
   setJoinState(text, true);
   toast(text.split('. ')[0], true);
+}
+
+// --- Staying connected ---------------------------------------------------------------------------
+// Both sides say "still here" every 20 s: idle links (Cloudflare closes quiet ones after ~100 s)
+// stay open, and a link that went silent for a minute is treated as dropped.
+setInterval(() => {
+  const now = Date.now();
+  if (collab.role === 'host') {
+    for (const g of collab.guests.values()) {
+      g.conn.send({ t: 'ping' });
+      // Only for people whose app says "still here" (older versions never do).
+      if (g.pings && now - (g.lastSeen || now) > 60000) g.conn.close();
+    }
+  } else if (collab.role === 'guest' && !collab.reconnecting) {
+    collab.host?.send({ t: 'ping' });
+    if (collab.hostPings && now - (collab.lastHeard || now) > 60000) hostLost();
+  }
+}, 20000);
+
+// The link to the host dropped: keep the shared show on screen (read-only) and quietly reconnect,
+// instead of sending the person back to their own show.
+function hostLost() {
+  if (collab.role !== 'guest' || collab.reconnecting) return;
+  collab.reconnecting = true;
+  collab.host = null;
+  applyReadOnly();
+  const bar = h('div', { id: 'reconnectBar' }, 'Connection lost. Reconnecting... (editing is paused so nothing is lost)');
+  $('#reconnectBar')?.remove();
+  document.body.append(bar);
+  let tries = 0;
+  const attempt = () => {
+    if (!collab.reconnecting) return;
+    if (++tries > 12) { // about 3 minutes
+      collab.reconnecting = false;
+      leaveSession('Lost the connection to the host. When they are back, use Rejoin in Settings > Collaboration. Unsent takes were kept.');
+      return;
+    }
+    bar.textContent = `Connection lost. Reconnecting (try ${tries})... Editing is paused so nothing is lost.`;
+    joinSession(collab.joinCode);
+    collab.reconnectTimer = setTimeout(attempt, 15000);
+  };
+  attempt();
+}
+
+function reconnected() {
+  collab.reconnecting = false;
+  clearTimeout(collab.reconnectTimer);
+  $('#reconnectBar')?.remove();
+  toast('Reconnected');
 }
 
 async function joinSession(rawCode) {
@@ -525,8 +589,11 @@ async function joinSession(rawCode) {
   if (!/^[A-Z0-9]{6}$/.test(code)) return toast('Codes are 6 letters and numbers', true);
   collab.joinCode = code;
   if (!settings.myName) return toast('Type your name first', true);
-  saveNow();
-  await api['backup:now'](); // your own show gets a restore point before you visit someone else's
+  if (collab.role !== 'guest') {
+    saveNow();
+    await api['backup:now'](); // your own show gets a restore point before you visit someone else's
+  }
+  collab.linkSocket?.close();
   collab.peer?.destroy();
   const peer = new Peer(undefined, iceConfig());
   collab.peer = peer;
@@ -537,13 +604,13 @@ async function joinSession(rawCode) {
   let directOpen = false;
   // A blocked direct link switches to the host's backup link when the host has one.
   const blocked = () => (collab.linkHint ? joinViaLink(collab.linkHint) : joinFailed(BLOCKED_HELP));
-  collab.joinTimer = setTimeout(() => { if (collab.role !== 'guest' && !directOpen && !collab.linkTrying) blocked(); }, 25000);
+  collab.joinTimer = setTimeout(() => { if (joining() && !directOpen && !collab.linkTrying) blocked(); }, 25000);
   peer.on('connection', (hint) => {
     const link = hint.metadata?.storyroomLink;
-    if (!link || !/^https:\/\/[a-z0-9-]+\.trycloudflare\.com$/.test(link) || collab.role === 'guest') return;
+    if (!link || !/^https:\/\/[a-z0-9-]+\.trycloudflare\.com$/.test(link) || !joining()) return;
     collab.linkHint = link;
     clearTimeout(collab.linkTimer);
-    collab.linkTimer = setTimeout(() => { if (!directOpen && collab.role !== 'guest') joinViaLink(link); }, 7000);
+    collab.linkTimer = setTimeout(() => { if (!directOpen && joining()) joinViaLink(link); }, 7000);
   });
   peer.on('error', (e) => joinFailed(e.type === 'peer-unavailable' ? 'No session with that code is open right now. Check the code, and that the host still has sharing on.'
     : e.type === 'network' || e.type === 'server-error' || e.type === 'socket-error' ? 'Could not reach the matchmaking server. Check your internet connection.' : `Could not connect: ${e.message}`));
@@ -552,20 +619,20 @@ async function joinSession(rawCode) {
     setJoinState('Reaching their PC...');
     conn.on('open', () => { directOpen = true; clearTimeout(collab.linkTimer); setJoinState('Connected. Waiting for the host to let you in...'); });
     conn.on('data', (d) => onHostData(conn, d));
-    conn.on('close', () => { if (collab.role === 'guest' && collab.host === conn) leaveSession('The session ended.'); });
+    conn.on('close', () => { if (collab.role === 'guest' && collab.host === conn) hostLost(); });
     conn.on('error', () => { if (!directOpen) blocked(); });
     // PeerJS creates the link a moment after connect(); a failed direct link shows up here quickly.
     const watchIce = () => {
       const pc = conn.peerConnection;
       if (!pc) return setTimeout(watchIce, 200);
-      pc.addEventListener('iceconnectionstatechange', () => { if (pc.iceConnectionState === 'failed' && collab.role !== 'guest') blocked(); });
+      pc.addEventListener('iceconnectionstatechange', () => { if (pc.iceConnectionState === 'failed' && joining() && collab.host !== conn) blocked(); });
     };
     watchIce();
   });
 }
 
 function joinViaLink(link) {
-  if (collab.linkTrying || collab.role === 'guest') return;
+  if (collab.linkTrying || !joining()) return;
   collab.linkTrying = true;
   clearTimeout(collab.joinTimer);
   setJoinState("Direct link blocked, so connecting through the host's backup link...");
@@ -583,9 +650,9 @@ function joinViaLink(link) {
     ws.onmessage = (e) => { const m = c.receive(e.data); if (m) onHostData(c, m); };
     ws.onclose = () => {
       c.open = false;
-      if (collab.role === 'guest' && collab.host === c) leaveSession('The session ended.');
+      if (collab.role === 'guest' && collab.host === c) hostLost();
       else if (!opened && collab.linkTrying && ++tries < 10) setTimeout(attempt, 2500); // a new address takes a few seconds to go live
-      else if (collab.role !== 'guest' && collab.linkTrying) joinFailed('Could not reach the host through the backup link either. Ask them to check Settings > Collaboration on their PC.');
+      else if (joining() && collab.linkTrying) joinFailed('Could not reach the host through the backup link either. Ask them to check Settings > Collaboration on their PC.');
     };
   };
   attempt();
@@ -613,15 +680,20 @@ async function networkCheck() {
 }
 
 async function onHostData(conn, d) {
+  collab.lastHeard = Date.now();
+  if (d.t === 'ping') { collab.hostPings = true; return; }
   if (d.t === 'wait') setJoinState('Waiting for the host to let you in...');
-  else if (d.t === 'denied') { joinFailed('The host did not let you in.'); }
+  else if (d.t === 'denied') { collab.reconnecting = false; joinFailed('The host did not let you in.'); }
   else if (d.t === 'state') {
-    if (collab.role !== 'guest') {
+    if (joining()) {
       clearTimeout(collab.joinTimer);
       clearTimeout(collab.linkTimer);
       collab.linkTrying = false;
       setJoinState(null);
       if (conn.isLink) collab.peer?.destroy(); // joined through the backup link: the direct attempt is no longer needed
+    }
+    if (collab.reconnecting) reconnected();
+    if (collab.role !== 'guest') {
       const { rootUrl } = await api['collab:guestRoot']();
       $('base').href = rootUrl;
       collab.role = 'guest';
@@ -694,13 +766,88 @@ function currentItem() {
 function applyReadOnly() {
   const main = $('#main');
   const sec = sectionOf(ui.view);
-  const ro = collab.role === 'guest' && !!sec && effective(collab.perms, sec, currentItem()) !== 'edit';
+  const ro = collab.role === 'guest' && (collab.reconnecting || (!!sec && effective(collab.perms, sec, currentItem()) !== 'edit'));
   main.classList.toggle('ro', ro);
   if (ro) {
     main.querySelectorAll('input, textarea, select').forEach((el) => { if (!el.closest('.side-search')) el.disabled = true; });
     main.querySelectorAll('.btn, .x, .tree-add, .panel-art').forEach((el) => { el.disabled = true; });
   }
   refreshLocks();
+  if (collab.role === 'guest') shareWhere();
+  if (collab.role === 'host') drawPresence();
+}
+
+// --- Where everyone is ---------------------------------------------------------------------------
+// Guests tell the host which section and item they have open; the host sees it in a live bar and
+// as coloured dots on those parts and pages, and can click a name to go to the same place.
+function whereNow() {
+  const section = SECTIONS.find((s) => s[0] === ui.view)?.[1] || (ui.view === 'settings' ? 'Settings' : ui.view || '');
+  let detail = '';
+  let ep = '';
+  let part = '';
+  let page = '';
+  if (ui.view === 'writing') {
+    const c = currentEp();
+    ep = c.ep?.id || ''; part = c.part?.id || '';
+    detail = c.ep ? `${c.ep.title} / ${c.part?.title || ''}` : '';
+  } else if (ui.view === 'storyboard') {
+    const e = S.episodes.find((x) => x.id === ui.boardEp) || S.episodes[0];
+    ep = e?.id || ''; detail = e?.title || '';
+  } else if (ui.view === 'characters' || ui.view === 'world') {
+    page = currentItem() || ''; detail = S.pages.find((p) => p.id === page)?.name || '';
+  } else if (ui.view === 'record') {
+    [ep, part] = (rec.part || '|').split('|');
+    const e = S.episodes.find((x) => x.id === ep);
+    detail = rec.ask ? `lines from ${rec.ask.part}` : e ? `${e.title} / ${allParts(e).find((p) => p.id === part)?.title || ''}` : '';
+  } else if (ui.view === 'settings') detail = ui.settingsTab || '';
+  return { view: ui.view || '', label: detail ? `${section}: ${detail}` : section, ep, part, page };
+}
+
+function shareWhere() {
+  if (!collab.host) return;
+  const where = whereNow();
+  const key = JSON.stringify(where);
+  if (key === collab.lastWhere) return;
+  collab.lastWhere = key;
+  collab.host.send({ t: 'where', ...where });
+}
+
+const presenceColor = (id) => { let n = 0; for (const ch of id) n = (n * 31 + ch.charCodeAt(0)) % 360; return `hsl(${n} 70% 62%)`; };
+
+function followGuest(g) {
+  const w = g.where;
+  if (!w?.view || !VIEW[w.view]) return;
+  if (w.view === 'writing') { ui.ep = w.ep; ui.part = w.part; }
+  if (w.view === 'storyboard') ui.boardEp = w.ep;
+  if (w.view === 'characters') ui.page_Characters = w.page;
+  if (w.view === 'world') ui.page_World = w.page;
+  go(w.view);
+}
+
+function drawPresence() {
+  let bar = $('#presence');
+  const people = collab.role === 'host' ? [...collab.guests.values()] : [];
+  if (!people.length) bar?.remove();
+  else {
+    if (!bar) { bar = h('div', { id: 'presence', 'aria-label': 'Who is where' }); document.body.append(bar); }
+    bar.replaceChildren(...people.map((g) => h('button', { type: 'button', class: 'presence-chip', title: 'Go to where they are', onclick: () => followGuest(g) },
+      h('i', { style: `background:${presenceColor(g.clientId)}` }), h('b', {}, g.name),
+      h('span', {}, g.where?.label || 'Just joined'), g.doc && h('em', {}, 'typing'))));
+  }
+  // Dots on the parts and pages people have open. Only changed rows are touched, so this cannot loop.
+  const at = new Map();
+  for (const g of people) {
+    const id = g.where?.part || g.where?.page;
+    if (id) at.set(id, [...(at.get(id) || []), g]);
+  }
+  document.querySelectorAll('#main [data-presence-id]').forEach((row) => {
+    const here = at.get(row.dataset.presenceId) || [];
+    const key = here.map((g) => g.clientId).join();
+    if ((row.dataset.pkey || '') === key) return;
+    row.dataset.pkey = key;
+    row.querySelectorAll('.pdot').forEach((d) => d.remove());
+    here.forEach((g) => row.append(h('span', { class: 'pdot', title: `${g.name} is here`, style: `background:${presenceColor(g.clientId)}` })));
+  });
 }
 let roQueued = false;
 new MutationObserver(() => {
@@ -738,7 +885,7 @@ function permsEditor(g) {
       btn('Remove', () => removeGuest(g), 'danger-text'))),
     h('label', { class: 'row tight delete-perm' }, h('input', { type: 'checkbox', class: 'switch', checked: !!g.perms.canDelete, onchange: (e) => { g.perms.canDelete = e.target.checked; setGuestPerms(g, g.perms); } }),
       h('span', {}, 'Can delete whole episodes, pages, panels and tasks'), h('span', { class: 'muted' }, '(off keeps your work safe: they can still edit what you allow)')),
-    g.doc && h('div', { class: 'muted' }, 'Writing right now'),
+    h('div', { class: 'muted' }, g.where?.label ? `Now in ${g.where.label}${g.doc ? ' (typing)' : ''}` : 'Just joined'),
     custom);
 }
 
