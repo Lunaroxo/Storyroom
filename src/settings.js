@@ -6,6 +6,7 @@ const SETTINGS_DEFAULTS = {
   backupEvery: '2', backupKeepDays: '2',
   addFolder: '', disabledSources: [],
   recFolder: 'Voice Takes', recBits: '24', micDevice: '', outputDevice: '',
+  notify: true, notifySound: true,
   autoUpdate: true,
   myName: '', askJoin: true, guestDefault: 'view', turnUrl: '', turnUser: '', turnPass: '', backupLink: true,
   customTheme: null, // set from a preset the first time Custom is picked
@@ -106,12 +107,13 @@ async function audioDevices() {
   return { inputs: pick('audioinput', 'Microphone'), outputs: pick('audiooutput', 'Speakers') };
 }
 
-async function playTestSound() {
+// A soft chime on the chosen speakers. The test chime rises; the notification "ding" is two notes.
+async function playTestSound(notes = [523.25, 659.25, 783.99]) {
   const ctx = new AudioContext();
   try { if (settings.outputDevice) await ctx.setSinkId(settings.outputDevice); } catch { /* default output */ }
   const gain = ctx.createGain();
   gain.connect(ctx.destination);
-  [523.25, 659.25, 783.99].forEach((f, i) => { // a soft three-note chime
+  notes.forEach((f, i) => {
     const osc = ctx.createOscillator();
     osc.frequency.value = f;
     osc.connect(gain);
@@ -122,6 +124,20 @@ async function playTestSound() {
   gain.gain.exponentialRampToValueAtTime(0.25 * audio.volume + 0.05, ctx.currentTime + 0.05);
   gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.9);
   setTimeout(() => ctx.close(), 1200);
+}
+
+// Something needs attention: a Windows notification with its sound when Storyroom is in the
+// background (clicking it opens the right place), or a chime when Storyroom is in front.
+const notifyActions = new Map();
+function notify(title, body, action) {
+  const tag = action ? uid() : '';
+  if (action) notifyActions.set(tag, action);
+  if (!document.hasFocus() && settings.notify) api['notify:show']({ title, body, tag, silent: !settings.notifySound });
+  else if (settings.notifySound) playTestSound([880, 1174.66]).catch(() => {});
+}
+function notifyClicked(tag) {
+  notifyActions.get(tag)?.();
+  notifyActions.delete(tag);
 }
 
 const THEMES = [
@@ -135,7 +151,7 @@ const THEMES = [
 
 VIEW.settings = (root) => {
   ui.settingsTab ||= 'Appearance';
-  const groups = ['Appearance', 'Writing', 'Saving & backups', 'Sounds & library', 'Recording', 'Collaboration', 'Phone link', 'Updates', 'About'];
+  const groups = ['Appearance', 'Writing', 'Saving & backups', 'Sounds & library', 'Recording', 'Notifications', 'Collaboration', 'Phone link', 'Updates', 'About'];
   const body = h('div', { class: 'set-body' });
   const nav = h('nav', { class: 'set-nav', 'aria-label': 'Settings sections' });
 
@@ -196,6 +212,12 @@ VIEW.settings = (root) => {
     ],
     Collaboration: () => [collabPanel()],
     'Phone link': () => [phonePanel()],
+    Notifications: () => [
+      h('p', { class: 'muted' }, 'For people asking to join, takes arriving from people or your phone, requests to record lines, and updates.'),
+      row('Windows notifications', 'Pop up in the corner of the screen when Storyroom is in the background. Click one to jump there.', tog('notify')),
+      row('Sound', 'Windows plays its notification sound, and Storyroom chimes when it is in front.', tog('notifySound')),
+      row('Try it', 'Sends a test in 3 seconds, so you can switch to another window first.', btn('Send a test', () => { toast('Test coming in 3 seconds...'); setTimeout(() => notify('Storyroom', 'This is how notifications look and sound.', () => go('settings')), 3000); }, 'primary')),
+    ],
     Updates: () => [
       row('Update automatically', 'Checks when the app opens and every minute.', tog('autoUpdate')),
       row('Check now', null, btn('Check for updates', async () => toast(await api['update:check']()), 'primary')),

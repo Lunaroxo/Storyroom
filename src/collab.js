@@ -389,6 +389,7 @@ async function admit(conn) {
   if (!clientId || collab.banned.has(clientId)) return conn.close();
   if (settings.askJoin && !collab.known.has(clientId)) {
     conn.send({ t: 'wait' });
+    notify('Someone wants to join', `${who} wants to join your show.`, () => {});
     const ok = await dialogBox({ title: `${who} wants to join`, text: 'They will see and edit only what their permissions allow. You can change that any time in Settings > Collaboration.', okText: 'Let them in' });
     if (!ok || !conn.open) { conn.send({ t: 'denied' }); setTimeout(() => conn.close(), 300); return; }
   }
@@ -407,6 +408,7 @@ async function admit(conn) {
     refreshCollabUI();
   });
   toast(`${who} joined`);
+  notify(`${who} joined`, 'They are writing with you now.', () => { ui.settingsTab = 'Collaboration'; go('settings'); });
   refreshCollabUI();
 }
 
@@ -440,6 +442,7 @@ async function onGuestData(g, d) {
     refreshLibTitles();
     rec.redraw?.();
     toast(`${g.name} sent a take: ${name}`);
+    notify('New voice take', `${g.name} sent "${name}"`, () => openLibraryFolder(folder));
     g.conn.send({ t: 'takeSaved', id: d.id, ok: true });
   }
 }
@@ -797,6 +800,12 @@ function phoneTakeArrived(info) {
   refreshLibTitles();
   rec.redraw?.();
   toast(`Phone take saved: ${info.title}`);
+  notify('New take from your phone', info.title, () => openLibraryFolder(folder));
+}
+
+function openLibraryFolder(folder) {
+  ui.lib = { search: '', sort: 'addedAt', dir: -1, picked: new Set(), ...(ui.lib || {}), scope: folder };
+  go('library');
 }
 
 function phonePanel() {

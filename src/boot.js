@@ -33,6 +33,7 @@ function upgrade(project) {
   api.onFileWritten(onFileWritten);
   api.onTunnel(tunnelOpened, tunnelData, tunnelClosed);
   api.onPhoneTake(phoneTakeArrived);
+  api.onNotifyClick(notifyClicked);
   applySettings();
   try {
     const left = sessionStorage.getItem('afterLeave');
@@ -40,6 +41,7 @@ function upgrade(project) {
   } catch { /* nothing to show */ }
   api.onUpdate((version) => {
     if ($('.toast.update')) return;
+    notify('Update ready', `Storyroom ${version} is ready. Restart to update.`, () => {});
     $('#toasts').append(h('div', { class: 'toast update' }, `Storyroom ${version} is ready. `,
       btn('Restart to update', () => { saveNow(); api['update:install'](); }, 'primary'),
       btn('Later', (e) => e.target.parentElement.remove())));

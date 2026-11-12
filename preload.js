@@ -1,6 +1,6 @@
 const { contextBridge, ipcRenderer, webUtils, webFrame } = require('electron');
 
-const channels = ['project:load', 'project:switch', 'project:open', 'image:pick', 'image:write', 'image:read', 'lib:pick', 'lib:import', 'lib:trash', 'lib:reveal', 'web:external', 'yt:ready', 'yt:install', 'yt:grab', 'yt:stream', 'find:search', 'find:add', 'update:install', 'pdf:export', 'lib:saveAudio', 'grammar:check', 'backup:list', 'backup:restore', 'backup:now', 'words:known', 'settings:main', 'app:version', 'app:openFolder', 'update:check', 'find:sources', 'file:read', 'file:write', 'collab:guestRoot', 'collab:leave', 'tunnel:ready', 'tunnel:install', 'tunnel:start', 'tunnel:stop', 'tunnel:send', 'tunnel:kick', 'phone:start', 'phone:stop', 'phone:local'];
+const channels = ['project:load', 'project:switch', 'project:open', 'image:pick', 'image:write', 'image:read', 'lib:pick', 'lib:import', 'lib:trash', 'lib:reveal', 'web:external', 'yt:ready', 'yt:install', 'yt:grab', 'yt:stream', 'find:search', 'find:add', 'update:install', 'pdf:export', 'lib:saveAudio', 'grammar:check', 'backup:list', 'backup:restore', 'backup:now', 'words:known', 'settings:main', 'app:version', 'app:openFolder', 'update:check', 'find:sources', 'file:read', 'file:write', 'collab:guestRoot', 'collab:leave', 'tunnel:ready', 'tunnel:install', 'tunnel:start', 'tunnel:stop', 'tunnel:send', 'tunnel:kick', 'phone:start', 'phone:stop', 'phone:local', 'notify:show'];
 const api = Object.fromEntries(channels.map((c) => [c, (...args) => ipcRenderer.invoke(c, ...args)]));
 
 contextBridge.exposeInMainWorld('api', {
@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('api', {
   pathOf: (file) => webUtils.getPathForFile(file),
   setZoom: (factor) => webFrame.setZoomFactor(factor),
   onFileWritten: (fn) => ipcRenderer.on('file:written', (_e, rel) => fn(rel)),
+  onNotifyClick: (fn) => ipcRenderer.on('notify:click', (_e, tag) => fn(tag)),
   onPhoneTake: (fn) => ipcRenderer.on('phone:take', (_e, info) => fn(info)),
   onTunnel: (open, data, close) => {
     ipcRenderer.on('tunnel:open', (_e, id) => open(id));

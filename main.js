@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, session, shell, Menu, net, powerSaveBlocker } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, session, shell, Menu, net, powerSaveBlocker, Notification } = require('electron');
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
@@ -297,7 +297,8 @@ app.on('before-quit', () => stopTunnel(null));
 const phone = { key: null, awake: null };
 const stopAwake = () => { if (phone.awake !== null) powerSaveBlocker.stop(phone.awake); phone.awake = null; };
 const PHONE_FILES = { 'phone.js': 'phone/phone.js', 'phone.css': 'phone/phone.css', 'shared.js': 'shared.js', 'rec-worklet.js': 'rec-worklet.js' };
-const PHONE_TYPES = { '.js': 'text/javascript', '.css': 'text/css', '.html': 'text/html; charset=utf-8', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif' };
+const PHONE_TYPES = { '.js': 'text/javascript', '.css': 'text/css', '.html': 'text/html; charset=utf-8', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif',
+  '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.ogg': 'audio/ogg', '.oga': 'audio/ogg', '.opus': 'audio/ogg', '.m4a': 'audio/mp4', '.mp4': 'audio/mp4', '.aac': 'audio/aac', '.flac': 'audio/flac', '.webm': 'audio/webm' };
 
 async function phoneRoute(req, res) {
   const { pathname, searchParams } = new URL(req.url, 'http://phone');
@@ -305,7 +306,18 @@ async function phoneRoute(req, res) {
   if (!m || !phone.key || m[1] !== phone.key || guestMode) { res.writeHead(404); res.end('Not found'); return; }
   const rest = m[2] || '';
   const headers = { 'Cache-Control': 'no-store', 'Content-Security-Policy': "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'", 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' };
-  const sendFile = (full) => { res.writeHead(200, { ...headers, 'Content-Type': PHONE_TYPES[path.extname(full).toLowerCase()] || 'application/octet-stream' }); fs.createReadStream(full).pipe(res); };
+  // Phones (Safari especially) only play sound that can be fetched in pieces, so ranges are supported.
+  const sendFile = (full) => {
+    const size = fs.statSync(full).size;
+    const type = { ...headers, 'Content-Type': PHONE_TYPES[path.extname(full).toLowerCase()] || 'application/octet-stream', 'Accept-Ranges': 'bytes' };
+    const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || '');
+    if (!range) { res.writeHead(200, { ...type, 'Content-Length': size }); fs.createReadStream(full).pipe(res); return; }
+    const start = range[1] === '' ? Math.max(0, size - Number(range[2])) : Number(range[1]);
+    const end = range[1] !== '' && range[2] !== '' ? Math.min(Number(range[2]), size - 1) : size - 1;
+    if (start > end) { res.writeHead(416, { 'Content-Range': `bytes */${size}` }); res.end(); return; }
+    res.writeHead(206, { ...type, 'Content-Range': `bytes ${start}-${end}/${size}`, 'Content-Length': end - start + 1 });
+    fs.createReadStream(full, { start, end }).pipe(res);
+  };
   if (rest === '') { res.writeHead(302, { Location: `${pathname}/` }); res.end(); return; }
   if (rest === '/') return sendFile(path.join(__dirname, 'src', 'phone', 'index.html'));
   const file = /^\/app\/([\w.-]+)$/.exec(rest);
@@ -317,12 +329,13 @@ async function phoneRoute(req, res) {
       episodes: data.episodes.map((e) => ({ id: e.id, title: e.title, parts: e.parts })),
       pages: data.pages.map((p) => ({ id: p.id, name: p.name, kind: p.kind, parent: p.parent || '', fields: p.fields, html: p.html, image: p.image })),
       taken: (data.library?.items || []).filter((i) => i.line).map((i) => i.line),
+      library: { folders: data.library?.folders || [], items: (data.library?.items || []).map((i) => ({ id: i.id, title: i.title, artist: i.artist, file: i.file, folder: i.folder, kind: i.kind, duration: i.duration, fav: i.fav })) },
     });
     res.writeHead(200, { ...headers, 'Content-Type': 'application/json' });
     res.end(body);
     return;
   }
-  const media = /^\/files\/(images\/[^/]+)$/.exec(rest);
+  const media = /^\/files\/((?:images|library)\/[^/]+)$/.exec(rest);
   if (media && req.method === 'GET') {
     const full = core.inside(root, decodeURIComponent(media[1]));
     if (!fs.existsSync(full)) { res.writeHead(404); res.end(); return; }
@@ -463,6 +476,17 @@ const handlers = {
     return streamUrl(url);
   },
   'update:install': () => autoUpdater.quitAndInstall(),
+  // Windows notification (with its sound unless silent). Clicking it brings Storyroom forward.
+  'notify:show': (_e, { title, body, tag, silent }) => {
+    if (!Notification.isSupported()) return false;
+    const note = new Notification({ title: String(title).slice(0, 120), body: String(body || '').slice(0, 300), silent: !!silent });
+    shownNotes.add(note); // kept until closed, or Windows can drop its click
+    note.on('click', () => { if (win.isMinimized()) win.restore(); win.show(); win.focus(); send('notify:click', tag); });
+    note.on('close', () => shownNotes.delete(note));
+    note.show();
+    if (!win.isFocused()) win.flashFrame(true);
+    return true;
+  },
   'settings:main': (_e, next) => {
     const every = cfg.backupEvery;
     Object.assign(cfg, next);
@@ -559,6 +583,9 @@ const handlers = {
     return filePath;
   },
 };
+
+const shownNotes = new Set();
+app.setAppUserModelId('com.lunaroxo.storyroom'); // the installer's id: Windows shows the notifications under Storyroom
 
 app.whenReady().then(() => {
   for (const [channel, fn] of Object.entries(handlers)) ipcMain.handle(channel, fn);

@@ -11,7 +11,7 @@ function h(tag, props, ...kids) {
     else if (k === 'class') el.className = v;
     else if (v != null && v !== false) el.setAttribute(k, v);
   }
-  el.append(...kids.flat().filter((x) => x != null && x !== false));
+  el.append(...kids.flat(Infinity).filter((x) => x != null && x !== false)); // lists inside lists, like the page groups
   return el;
 }
 
@@ -150,9 +150,49 @@ function pagesView() {
     !state.show.pages.length && h('p', { class: 'muted' }, 'No pages yet.'));
 }
 
+// --- Sound library: browse folders, search, play from the PC -----------------------------------
+const player = new Audio();
+let playing = null;
+function play(item) {
+  if (playing === item) { player.paused ? player.play() : player.pause(); return; }
+  playing = item;
+  player.src = `files/${item.file.split('/').map(encodeURIComponent).join('/')}`;
+  player.play().catch(() => status('This sound will not play on this phone.', true));
+  $('#player').classList.remove('off');
+  $('#playTitle').textContent = item.title;
+  document.querySelectorAll('.sound').forEach((b) => b.classList.toggle('playing', b.dataset.id === item.id));
+}
+player.addEventListener('play', () => { $('#playBtn').textContent = 'II'; });
+player.addEventListener('pause', () => { $('#playBtn').textContent = '▶'; });
+$('#playBtn').addEventListener('click', () => (player.paused ? player.play() : player.pause()));
+$('#playClose').addEventListener('click', () => { player.pause(); playing = null; $('#player').classList.add('off'); });
+
+const clockText = (s) => `${Math.floor((s || 0) / 60)}:${String(Math.floor((s || 0) % 60)).padStart(2, '0')}`;
+function libraryView() {
+  const lib = state.show.library || { folders: [], items: [] };
+  state.folder ||= 'All';
+  const scopes = ['All', 'Favorites', 'Music', 'Sounds', ...lib.folders.filter((f) => lib.items.some((i) => i.folder === f))];
+  const inScope = (i) => (state.folder === 'All' ? true : state.folder === 'Favorites' ? i.fav : state.folder === 'Music' ? i.kind === 'music' : state.folder === 'Sounds' ? i.kind === 'sound' : i.folder === state.folder);
+  const list = h('div', {});
+  const fill = () => {
+    const q = (state.search || '').toLowerCase();
+    const items = lib.items.filter((i) => inScope(i) && `${i.title} ${i.artist || ''}`.toLowerCase().includes(q)).reverse();
+    list.replaceChildren(...(items.length ? items.map((i) => h('button', { type: 'button', class: `sound ${playing?.id === i.id ? 'playing' : ''}`, 'data-id': i.id, onclick: () => play(i) },
+      h('span', { class: 'play' }, '▶'),
+      h('span', { class: 'meta' }, h('b', {}, i.title), h('small', {}, [i.folder, i.duration ? clockText(i.duration) : ''].filter(Boolean).join(' | '))))) : [h('p', { class: 'muted' }, lib.items.length ? 'Nothing here.' : 'The library is empty.')]));
+  };
+  fill();
+  // Typing filters the list only, so the box keeps focus and the keyboard stays open.
+  const search = h('input', { class: 'search', type: 'search', placeholder: 'Search sounds and takes', 'aria-label': 'Search library', value: state.search || '' });
+  search.addEventListener('input', () => { state.search = search.value; fill(); });
+  return h('div', { class: 'library' },
+    h('div', { class: 'chips' }, scopes.map((s) => h('button', { type: 'button', class: `chip ${state.folder === s ? 'on' : ''}`, onclick: () => { state.folder = s; draw(); } }, s))),
+    search, list);
+}
+
 function draw() {
   const scroll = $('#view').scrollTop;
-  $('#view').replaceChildren(state.tab === 'record' ? recordView() : state.tab === 'script' ? scriptView() : pagesView());
+  $('#view').replaceChildren(state.tab === 'record' ? recordView() : state.tab === 'script' ? scriptView() : state.tab === 'library' ? libraryView() : pagesView());
   $('#view').scrollTop = scroll;
   document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === state.tab));
 }
