@@ -7,8 +7,22 @@ const SETTINGS_DEFAULTS = {
   addFolder: '', disabledSources: [],
   recFolder: 'Voice Takes', recBits: '24', micDevice: '', outputDevice: '',
   autoUpdate: true,
-  myName: '', askJoin: true, guestDefault: 'view',
+  myName: '', askJoin: true, guestDefault: 'view', turnUrl: '', turnUser: '', turnPass: '',
+  customTheme: null, // set from a preset the first time Custom is picked
 };
+
+// The colors behind each preset, so Custom can start from any of them.
+const THEME_COLORS = {
+  cozy: { bg: '#17181c', panel: '#1f2026', panel2: '#272930', line: '#33353e', text: '#ece9e2', muted: '#a0a2ab', accent: '#f0a94b', paper: '#fbf8f1' },
+  midnight: { bg: '#11151f', panel: '#182033', panel2: '#202a40', line: '#2c3852', text: '#e6ebf5', muted: '#98a3b9', accent: '#6ea8fe', paper: '#fbf8f1' },
+  forest: { bg: '#141a16', panel: '#1b241e', panel2: '#232f27', line: '#304036', text: '#e5ede6', muted: '#9aab9e', accent: '#8fcf7a', paper: '#fbf8f1' },
+  plum: { bg: '#1a1520', panel: '#241d2c', panel2: '#2d2537', line: '#3c3149', text: '#efe6f3', muted: '#ab9db7', accent: '#e58fc3', paper: '#fbf8f1' },
+  paper: { bg: '#f4f1ea', panel: '#fffdf8', panel2: '#efeae0', line: '#ddd5c6', text: '#2a2723', muted: '#756e63', accent: '#c7741f', paper: '#fbf8f1' },
+  contrast: { bg: '#000000', panel: '#0d0d0d', panel2: '#1a1a1a', line: '#8a8a8a', text: '#ffffff', muted: '#d0d0d0', accent: '#ffd400', paper: '#fbf8f1' },
+};
+const CUSTOM_PARTS = [['bg', 'Background'], ['panel', 'Side panels'], ['panel2', 'Boxes and inputs'], ['line', 'Lines and borders'], ['text', 'Text'], ['muted', 'Faded text'], ['accent', 'Accent'], ['paper', 'Writing paper']];
+const brightness = (hex) => { const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)); return 0.299 * r + 0.587 * g + 0.114 * b; };
+const inkFor = (hex) => (brightness(hex) > 150 ? '#1d1c1a' : '#f2efe8');
 
 function loadSettings() {
   try {
@@ -38,10 +52,22 @@ function applySettings() {
   b.classList.toggle('no-motion', !settings.motion);
   b.classList.toggle('solid', !settings.glass);
   b.classList.toggle('no-wordcount', !settings.wordCount);
-  if (settings.accent) {
-    const [r, g, bl] = [1, 3, 5].map((i) => parseInt(settings.accent.slice(i, i + 2), 16));
-    root.setProperty('--accent', settings.accent);
-    root.setProperty('--accent-ink', (0.299 * r + 0.587 * g + 0.114 * bl) > 150 ? '#1d1508' : '#ffffff');
+  const custom = settings.theme === 'custom' && settings.customTheme;
+  for (const [key] of CUSTOM_PARTS) {
+    if (custom) root.setProperty(`--${key}`, custom[key]); else root.removeProperty(`--${key}`);
+  }
+  if (custom) {
+    root.setProperty('--glass', `${custom.panel}c9`);
+    root.setProperty('--paper-ink', inkFor(custom.paper));
+    root.colorScheme = brightness(custom.bg) > 150 ? 'light' : 'dark';
+  } else {
+    ['--glass', '--paper-ink'].forEach((v) => root.removeProperty(v));
+    root.colorScheme = '';
+  }
+  const accent = settings.accent || custom?.accent;
+  if (accent) {
+    root.setProperty('--accent', accent);
+    root.setProperty('--accent-ink', brightness(accent) > 150 ? '#1d1508' : '#ffffff');
   } else {
     root.removeProperty('--accent');
     root.removeProperty('--accent-ink');
@@ -120,7 +146,16 @@ VIEW.settings = (root) => {
   const pages = {
     Appearance: () => [
       h('div', { class: 'theme-grid' }, THEMES.map(([id, label, [bg, panel, accent]]) => h('button', { type: 'button', class: `theme-card ${settings.theme === id ? 'on' : ''}`, onclick: () => { setSetting('theme', id); draw(); } },
-        h('div', { class: 'theme-swatch', style: `background:${bg}` }, h('i', { style: `background:${panel}` }), h('b', { style: `background:${accent}` })), label))),
+        h('div', { class: 'theme-swatch', style: `background:${bg}` }, h('i', { style: `background:${panel}` }), h('b', { style: `background:${accent}` })), label)),
+      (() => {
+        const c = settings.customTheme || THEME_COLORS.cozy;
+        return h('button', { type: 'button', class: `theme-card ${settings.theme === 'custom' ? 'on' : ''}`, onclick: () => {
+          if (!settings.customTheme) settings.customTheme = { ...(THEME_COLORS[settings.theme] || THEME_COLORS.cozy) };
+          setSetting('theme', 'custom');
+          draw();
+        } }, h('div', { class: 'theme-swatch custom-swatch', style: `background:${c.bg}` }, h('i', { style: `background:${c.panel}` }), h('b', { style: `background:${c.accent}` })), 'Custom');
+      })()),
+      settings.theme === 'custom' && customEditor(),
       row('Accent color', 'Buttons, highlights and the active section.', h('div', { class: 'row' },
         h('input', { type: 'color', value: settings.accent || '#f0a94b', 'aria-label': 'Accent color', onchange: (e) => setSetting('accent', e.target.value) }),
         btn('Use theme color', () => { setSetting('accent', ''); draw(); }))),
@@ -186,6 +221,19 @@ VIEW.settings = (root) => {
       micSlot.replaceWith(select([['', 'System default'], ...inputs], settings.micDevice, (v) => setSetting('micDevice', v), { 'aria-label': 'Microphone', class: 'device-sel' }));
     });
   }
+  // Every color of the Custom theme, plus a way to start over from any preset.
+  function customEditor() {
+    const c = settings.customTheme;
+    const update = (key, value) => setSetting('customTheme', { ...settings.customTheme, [key]: value });
+    return h('div', { class: 'custom-theme' },
+      h('div', { class: 'row between' }, h('h3', { class: 'set-sub' }, 'Your colors'),
+        select([['', 'Start from a preset...'], ...THEMES.map(([id, label]) => [id, label])], '', (v) => { if (v) { setSetting('customTheme', { ...THEME_COLORS[v] }); draw(); } }, { 'aria-label': 'Start from a preset' })),
+      h('div', { class: 'custom-grid' }, CUSTOM_PARTS.map(([key, label]) => h('label', { class: 'custom-color' },
+        h('input', { type: 'color', value: c[key], 'aria-label': label, oninput: (e) => update(key, e.target.value), onchange: () => draw() }),
+        h('span', {}, label)))),
+      h('p', { class: 'muted' }, 'Changes show right away. The Accent color above overrides this accent unless you press "Use theme color".'));
+  }
+
   const versionRow = row('Version', null, h('span', { class: 'muted' }, '...'));
   api['app:version']().then((v) => { versionRow.lastChild.textContent = `Storyroom ${v}`; });
   const sourceList = h('div', { class: 'source-list' });

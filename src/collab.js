@@ -14,7 +14,13 @@ const collab = {
   clientId: (() => { try { return localStorage.getItem('clientId') || (localStorage.setItem('clientId', uid() + uid()), localStorage.getItem('clientId')); } catch { return uid() + uid(); } })(),
 };
 const myName = () => settings.myName || 'Someone';
-const presetPerms = (level) => ({ sections: Object.fromEntries(SECTION_LIST.map(([k]) => [k, level])), items: {} });
+const presetPerms = (level) => ({ sections: Object.fromEntries(SECTION_LIST.map(([k]) => [k, level])), items: {}, canDelete: false });
+// Two public STUN servers find each PC's address; a relay (TURN) from Settings carries data when a network blocks direct links.
+const iceConfig = () => ({ config: { iceServers: [
+  { urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun.cloudflare.com:3478' },
+  ...(settings.turnUrl ? [{ urls: settings.turnUrl.split(/[\s,]+/).filter(Boolean), username: settings.turnUser, credential: settings.turnPass }] : []),
+] } });
+const isDeletion = (op) => 'rm' in op || op.del === true;
 
 // --- Operations --------------------------------------------------------------------------------
 const isObj = (x) => x && typeof x === 'object' && !Array.isArray(x);
@@ -223,12 +229,13 @@ function newCode() {
 function startHosting() {
   if (!settings.myName) return toast('Type your name first', true);
   const code = newCode();
-  const peer = new Peer(PEER_PREFIX + code);
+  const peer = new Peer(PEER_PREFIX + code, iceConfig());
   collab.peer = peer;
   peer.on('open', () => {
     collab.role = 'host';
     collab.code = code;
     saveNow();
+    api['backup:now'](); // a restore point from before anyone joined
     collab.snapshot = structuredClone(S);
     refreshCollabUI();
   });
@@ -251,6 +258,7 @@ async function admit(conn) {
   }
   const g = { conn, name: who, clientId, perms: collab.known.get(clientId) || presetPerms(settings.guestDefault), doc: null };
   collab.known.set(clientId, g.perms);
+  api['backup:now'](); // a restore point from before this person changed anything
   collab.guests.get(clientId)?.conn.close();
   collab.guests.set(clientId, g);
   sendState(g);
@@ -272,7 +280,8 @@ function sendState(g) {
 
 async function onGuestData(g, d) {
   if (d.t === 'ops' && Array.isArray(d.ops)) {
-    const ok = d.ops.filter((op) => Array.isArray(op?.p) && opLevel(g.perms, op, S) === 'edit');
+    // Deleting whole episodes, pages, panels or tasks needs its own permission (off unless the host turns it on).
+    const ok = d.ops.filter((op) => Array.isArray(op?.p) && opLevel(g.perms, op, S) === 'edit' && (!isDeletion(op) || g.perms.canDelete));
     if (ok.length) { applyRemote(ok); relay(ok, g); }
     if (ok.length !== d.ops.length) sendState(g); // undo what they were not allowed to change
   } else if (d.t === 'focus') {
@@ -307,27 +316,81 @@ function removeGuest(g) {
 }
 
 // --- Joining -----------------------------------------------------------------------------------
-function joinSession(rawCode) {
+const BLOCKED_HELP = 'The two PCs could not link directly. A router or network (school, work, some internet providers, phone hotspots) is blocking it. Try "Test my connection" on both PCs, another network, or add a relay server below on both PCs.';
+
+// Shown in Settings > Collaboration while joining, so it never just sits on "Connecting".
+function setJoinState(text, failed) {
+  collab.joinState = text ? { text, failed: !!failed } : null;
+  refreshCollabUI();
+}
+
+function joinFailed(text) {
+  clearTimeout(collab.joinTimer);
+  collab.peer?.destroy();
+  collab.peer = null;
+  setJoinState(text, true);
+  toast(text.split('. ')[0], true);
+}
+
+async function joinSession(rawCode) {
   const code = rawCode.trim().toUpperCase();
   if (!/^[A-Z0-9]{6}$/.test(code)) return toast('Codes are 6 letters and numbers', true);
   if (!settings.myName) return toast('Type your name first', true);
   saveNow();
-  const peer = new Peer();
+  await api['backup:now'](); // your own show gets a restore point before you visit someone else's
+  collab.peer?.destroy();
+  const peer = new Peer(undefined, iceConfig());
   collab.peer = peer;
-  peer.on('error', (e) => toast(e.type === 'peer-unavailable' ? 'No session with that code is open right now.' : `Could not connect: ${e.message}`, true));
+  setJoinState('Finding the session...');
+  clearTimeout(collab.joinTimer);
+  collab.joinTimer = setTimeout(() => { if (collab.role !== 'guest' && collab.joinState?.text !== 'Waiting for the host to let you in...') joinFailed(BLOCKED_HELP); }, 25000);
+  peer.on('error', (e) => joinFailed(e.type === 'peer-unavailable' ? 'No session with that code is open right now. Check the code, and that the host still has sharing on.'
+    : e.type === 'network' || e.type === 'server-error' || e.type === 'socket-error' ? 'Could not reach the matchmaking server. Check your internet connection.' : `Could not connect: ${e.message}`));
   peer.on('open', () => {
     const conn = peer.connect(PEER_PREFIX + code, { reliable: true, metadata: { name: myName(), clientId: collab.clientId } });
+    setJoinState('Reaching their PC...');
+    conn.on('open', () => setJoinState('Connected. Waiting for the host to let you in...'));
     conn.on('data', (d) => onHostData(conn, d));
     conn.on('close', () => { if (collab.role === 'guest') leaveSession('The session ended.'); });
-    toast('Connecting...');
+    conn.on('error', () => joinFailed(BLOCKED_HELP));
+    // PeerJS creates the link a moment after connect(); a failed direct link shows up here quickly.
+    const watchIce = () => {
+      const pc = conn.peerConnection;
+      if (!pc) return setTimeout(watchIce, 200);
+      pc.addEventListener('iceconnectionstatechange', () => { if (pc.iceConnectionState === 'failed' && collab.role !== 'guest') joinFailed(BLOCKED_HELP); });
+    };
+    watchIce();
   });
 }
 
+// Tells people whether their network allows direct links, and whether a relay is working.
+async function networkCheck() {
+  const pc = new RTCPeerConnection(iceConfig().config);
+  const found = [];
+  pc.onicecandidate = (e) => { if (e.candidate) found.push(e.candidate); };
+  pc.createDataChannel('check');
+  await pc.setLocalDescription(await pc.createOffer());
+  await new Promise((r) => setTimeout(r, 5000));
+  pc.close();
+  const outside = found.filter((c) => c.type === 'srflx');
+  const relay = found.some((c) => c.type === 'relay');
+  // Different outside ports for the same inside port means the router hides each link differently ("strict").
+  const byBase = new Map();
+  outside.forEach((c) => byBase.set(c.relatedPort, new Set([...(byBase.get(c.relatedPort) || []), c.port])));
+  const strict = [...byBase.values()].some((ports) => ports.size > 1);
+  const relayNote = settings.turnUrl ? (relay ? ' Your relay server works.' : ' Your relay server did not answer: check its address and login.') : '';
+  if (!outside.length) return `Direct links are blocked on this network.${relayNote || ' You need a relay server (below) to write together from here.'}`;
+  if (strict) return `This network is strict: direct links often fail.${relayNote || ' Adding a relay server (below) on both PCs fixes it.'}`;
+  return `This network is fine for direct links.${relayNote}`;
+}
+
 async function onHostData(conn, d) {
-  if (d.t === 'wait') toast('Waiting for the host to let you in...');
-  else if (d.t === 'denied') { toast('The host did not let you in.', true); collab.peer.destroy(); }
+  if (d.t === 'wait') setJoinState('Waiting for the host to let you in...');
+  else if (d.t === 'denied') { joinFailed('The host did not let you in.'); }
   else if (d.t === 'state') {
     if (collab.role !== 'guest') {
+      clearTimeout(collab.joinTimer);
+      setJoinState(null);
       const { rootUrl } = await api['collab:guestRoot']();
       $('base').href = rootUrl;
       collab.role = 'guest';
@@ -426,10 +489,12 @@ function permsEditor(g) {
     h('div', { class: 'row between' }, h('b', {}, g.name), h('div', { class: 'row' },
       select([['view', 'View everything'], ['edit', 'Edit everything'], ['custom', 'Custom...']], preset, (v) => {
         if (v === 'custom') { if (!custom.firstChild) drawCustom(); return; }
-        setGuestPerms(g, presetPerms(v));
+        setGuestPerms(g, { ...presetPerms(v), canDelete: g.perms.canDelete });
         custom.replaceChildren();
       }, { 'aria-label': `Permissions for ${g.name}` }),
       btn('Remove', () => removeGuest(g), 'danger-text'))),
+    h('label', { class: 'row tight delete-perm' }, h('input', { type: 'checkbox', class: 'switch', checked: !!g.perms.canDelete, onchange: (e) => { g.perms.canDelete = e.target.checked; setGuestPerms(g, g.perms); } }),
+      h('span', {}, 'Can delete whole episodes, pages, panels and tasks'), h('span', { class: 'muted' }, '(off keeps your work safe: they can still edit what you allow)')),
     g.doc && h('div', { class: 'muted' }, 'Writing right now'),
     custom);
 }
@@ -449,7 +514,9 @@ function collabPanel() {
       h('div', { class: 'set-row' }, h('div', { class: 'set-text' }, h('div', { class: 'set-label' }, 'Ask before someone joins'), h('div', { class: 'muted' }, 'Recommended. Anyone with the code can ask.')), h('input', { type: 'checkbox', class: 'switch', checked: settings.askJoin, onchange: (e) => setSetting('askJoin', e.target.checked) })),
       h('div', { class: 'set-row' }, h('div', { class: 'set-text' }, h('div', { class: 'set-label' }, 'New people start with'), h('div', { class: 'muted' }, 'You can change each person below.')), select([['view', 'View only'], ['edit', 'Can edit everything']], settings.guestDefault, (v) => setSetting('guestDefault', v))),
       h('h3', { class: 'set-sub' }, `People here (${collab.guests.size})`),
-      collab.guests.size ? [...collab.guests.values()].map(permsEditor) : h('p', { class: 'muted' }, 'Nobody yet. Send them the code.'));
+      collab.guests.size ? [...collab.guests.values()].map(permsEditor) : h('p', { class: 'muted' }, 'Nobody yet. Send them the code.'),
+      h('p', { class: 'muted' }, 'A backup is made when you start sharing and each time someone joins. Settings > Saving & backups > Open backups goes back to any of them.'),
+      connectionTools());
   }
   if (collab.role === 'guest') {
     const can = (k) => effective(collab.perms, k);
@@ -458,10 +525,28 @@ function collabPanel() {
         h('div', { class: 'muted' }, SECTION_LIST.map(([k, label]) => `${label}: ${{ hidden: 'hidden', view: 'view only', edit: 'can edit' }[can(k)]}`).join(' | ')),
         h('div', { class: 'row' }, btn('Leave session', () => leaveSession('You left the session.'), 'danger-text'))));
   }
-  const codeIn = h('input', { class: 'code-input', placeholder: 'ABC123', maxLength: 6, 'aria-label': 'Session code', onkeydown: (e) => { if (e.key === 'Enter') joinSession(codeIn.value); } });
+  const codeIn = h('input', { class: 'code-input', placeholder: 'ABC123', maxLength: 6, value: collab.lastCode || '', 'aria-label': 'Session code', oninput: (e) => { collab.lastCode = e.target.value; }, onkeydown: (e) => { if (e.key === 'Enter') joinSession(codeIn.value); } });
   return h('div', {}, nameRow,
     h('div', { class: 'collab-cards' },
       h('div', { class: 'code-box' }, h('div', { class: 'set-label' }, 'Host this show'), h('div', { class: 'muted' }, 'Get a code to send. You choose what each person can see and edit.'), btn('Start sharing', startHosting, 'primary')),
-      h('div', { class: 'code-box' }, h('div', { class: 'set-label' }, 'Join someone'), h('div', { class: 'muted' }, 'Type the code they sent you. Your own show stays safe on your PC.'), h('div', { class: 'row' }, codeIn, btn('Join', () => joinSession(codeIn.value), 'primary')))),
-    h('p', { class: 'muted' }, 'Connections go straight between PCs and are encrypted. A free public server (PeerJS) only matches up the code. Some strict work or school networks block direct connections.'));
+      h('div', { class: 'code-box' }, h('div', { class: 'set-label' }, 'Join someone'), h('div', { class: 'muted' }, 'Type the code they sent you. Your own show is backed up first and is never changed while you visit.'), h('div', { class: 'row' }, codeIn, btn('Join', () => joinSession(codeIn.value), 'primary')),
+        collab.joinState && h('div', { class: `join-state ${collab.joinState.failed ? 'failed' : 'busy'}` }, collab.joinState.text))),
+    h('p', { class: 'muted' }, 'Connections go straight between PCs and are encrypted. A free public server (PeerJS) only matches up the code.'),
+    connectionTools());
+}
+
+// Network test and optional relay server, for networks that block direct links.
+function connectionTools() {
+  const result = h('div', { class: 'muted' });
+  const field = (key, label, type = 'text') => h('label', { class: 'field' }, h('span', {}, label), h('input', { type, value: settings[key] || '', autocomplete: 'off', onchange: (e) => setSetting(key, e.target.value.trim()) }));
+  return h('div', {},
+    h('h3', { class: 'set-sub' }, 'Connection trouble?'),
+    h('div', { class: 'set-row' }, h('div', { class: 'set-text' }, h('div', { class: 'set-label' }, 'Test my connection'), h('div', { class: 'muted' }, 'Run this on both PCs if joining gets stuck.'), result),
+      btn('Test', async (e) => { e.target.disabled = true; result.textContent = 'Testing for 5 seconds...'; result.textContent = await networkCheck(); e.target.disabled = false; })),
+    h('details', { class: 'relay-box', open: !!settings.turnUrl },
+      h('summary', {}, 'Relay server (for networks that block direct links)'),
+      h('p', { class: 'muted' }, 'A relay passes the writing through a server when two PCs cannot link directly. Get a free one at metered.ca (Open Relay, 20 GB a month free) or Cloudflare Calls, then paste its TURN address, username and password here on both PCs. It is saved only on this PC.'),
+      field('turnUrl', 'TURN address, like turn:global.relay.metered.ca:443'),
+      field('turnUser', 'Username'),
+      field('turnPass', 'Password', 'password')));
 }
